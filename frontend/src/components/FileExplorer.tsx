@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { FolderTree, File, ChevronRight, ChevronDown } from 'lucide-react';
+import { FolderTree, File, ChevronRight, ChevronDown, Code, FileText, Image, FileJson, FileSpreadsheet, Coffee } from 'lucide-react';
 import { FileItem } from '../types';
 
 interface FileExplorerProps {
@@ -11,10 +11,45 @@ interface FileNodeProps {
   item: FileItem;
   depth: number;
   onFileClick: (file: FileItem) => void;
+  selectedFile: FileItem | null;
 }
 
-function FileNode({ item, depth, onFileClick }: FileNodeProps) {
-  const [isExpanded, setIsExpanded] = useState(false);
+// Helper function to determine file type icon based on extension
+function getFileIcon(fileName: string) {
+  const extension = fileName.split('.').pop()?.toLowerCase();
+  switch (extension) {
+    case 'js':
+    case 'jsx':
+    case 'ts':
+    case 'tsx':
+      return <Code className="w-4 h-4 text-yellow-400" />;
+    case 'json':
+      return <FileJson className="w-4 h-4 text-green-400" />;
+    case 'css':
+    case 'scss':
+    case 'sass':
+      return <FileText className="w-4 h-4 text-blue-400" />;
+    case 'html':
+      return <FileText className="w-4 h-4 text-orange-400" />;
+    case 'png':
+    case 'jpg':
+    case 'jpeg':
+    case 'svg':
+    case 'gif':
+      return <Image className="w-4 h-4 text-purple-400" />;
+    case 'md':
+      return <FileText className="w-4 h-4 text-gray-400" />;
+    case 'csv':
+    case 'xlsx':
+      return <FileSpreadsheet className="w-4 h-4 text-green-500" />;
+    default:
+      return <File className="w-4 h-4 text-gray-400" />;
+  }
+}
+
+function FileNode({ item, depth, onFileClick, selectedFile }: FileNodeProps) {
+  const [isExpanded, setIsExpanded] = useState(depth === 0); // Auto-expand root level
+  const isSelected = selectedFile?.path === item.path;
 
   const handleClick = () => {
     if (item.type === 'folder') {
@@ -27,7 +62,9 @@ function FileNode({ item, depth, onFileClick }: FileNodeProps) {
   return (
     <div className="select-none">
       <div
-        className="flex items-center gap-2 p-2 hover:bg-gray-800 rounded-md cursor-pointer"
+        className={`flex items-center gap-2 p-2 hover:bg-gray-800 rounded-md cursor-pointer ${
+          isSelected ? 'bg-gray-700 text-white' : ''
+        }`}
         style={{ paddingLeft: `${depth * 1.5}rem` }}
         onClick={handleClick}
       >
@@ -43,18 +80,21 @@ function FileNode({ item, depth, onFileClick }: FileNodeProps) {
         {item.type === 'folder' ? (
           <FolderTree className="w-4 h-4 text-blue-400" />
         ) : (
-          <File className="w-4 h-4 text-gray-400" />
+          getFileIcon(item.name)
         )}
-        <span className="text-gray-200">{item.name}</span>
+        <span className={`truncate ${isSelected ? 'font-medium' : 'text-gray-200'}`}>
+          {item.name}
+        </span>
       </div>
       {item.type === 'folder' && isExpanded && item.children && (
-        <div>
+        <div className="border-l border-gray-800 ml-5">
           {item.children.map((child, index) => (
             <FileNode
               key={`${child.path}-${index}`}
               item={child}
               depth={depth + 1}
               onFileClick={onFileClick}
+              selectedFile={selectedFile}
             />
           ))}
         </div>
@@ -64,6 +104,13 @@ function FileNode({ item, depth, onFileClick }: FileNodeProps) {
 }
 
 export function FileExplorer({ files, onFileSelect }: FileExplorerProps) {
+  const [selectedFile, setSelectedFile] = useState<FileItem | null>(null);
+  
+  const handleFileSelect = (file: FileItem) => {
+    setSelectedFile(file);
+    onFileSelect(file);
+  };
+
   return (
     <div className="bg-gray-900 rounded-lg shadow-lg p-4 h-full overflow-auto">
       <h2 className="text-lg font-semibold mb-4 flex items-center gap-2 text-gray-100">
@@ -76,7 +123,8 @@ export function FileExplorer({ files, onFileSelect }: FileExplorerProps) {
             key={`${file.path}-${index}`}
             item={file}
             depth={0}
-            onFileClick={onFileSelect}
+            onFileClick={handleFileSelect}
+            selectedFile={selectedFile}
           />
         ))}
       </div>
