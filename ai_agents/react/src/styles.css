@@ -1,0 +1,98 @@
+:root {
+  --primary-color: #3b82f6;
+  --secondary-color: #f8fafc;
+  --accent-color: #10b981;
+  --background-color: #ffffff;
+  --text-color: #111827;
+
+  --primary-font: system-ui, sans-serif;
+  --font-size-sm: 14px;
+  --font-size-md: 16px;
+  --font-size-lg: 18px;
+  --font-size-xl: 24px;
+  --font-size-xxl: 32px;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  --line-height-sm: 1.4;
+  --line-height-md: 1.6;
+  --line-height-lg: 1.8;
+}
+
+body {
+  font-family: var(--primary-font);
+  background-color: var(--background-color);
+  color: var(--text-color);
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.app-container {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* Header Styles */
+header {
+  background-color: var(--secondary-color);
+  padding: 20px;
+  text-align: center;
+}
+
+/* Main Styles */
+main {
+  padding: 20px;
+  flex: 1;
+}
+
+/* Footer Styles */
+footer {
+  background-color: var(--secondary-color);
+  padding: 10px;
+  text-align: center;
+  font-size: var(--font-size-sm);
+}
+
+/* Button Styles */
+button {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: var(--font-size-md);
+}
+
+button.primary {
+  background-color: var(--primary-color);
+  color: white;
+}
+
+button.secondary {
+  background-color: var(--accent-color);
+  color: white;
+}
+
+/* Form Styles */
+input[type="text"] {
+  padding: 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: var(--font-size-md);
+}
+
+/* Fade Animation */
+.fade-in {
+  animation: fadeIn 1s ease-in-out;
+}
+
+@keyframes fadeIn {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
