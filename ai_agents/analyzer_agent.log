@@ -1,0 +1,37 @@
+2025-06-17 23:33:31,546 - AnalyzerAgent - INFO - Using Gemini API key for analysis
+2025-06-17 23:33:31,546 - AnalyzerAgent - INFO - Successfully initialized gemini-2.0-flash model
+2025-06-17 23:34:04,020 - AnalyzerAgent - INFO - Starting analysis for image: ./cloned_sites/original_1750183411.png
+2025-06-17 23:34:04,020 - AnalyzerAgent - INFO - HTML content length: 1248
+2025-06-17 23:34:04,020 - AnalyzerAgent - INFO - Image file size: 31253 bytes
+2025-06-17 23:34:04,021 - AnalyzerAgent - INFO - Framework detection complete
+2025-06-17 23:34:04,021 - AnalyzerAgent - INFO - Successfully read image data: 31253 bytes
+2025-06-17 23:34:04,021 - AnalyzerAgent - INFO - Attempting vision analysis with Gemini
+2025-06-17 23:34:10,983 - AnalyzerAgent - INFO - Got response from Gemini: 2303 characters
+2025-06-17 23:34:10,983 - AnalyzerAgent - DEBUG - Raw Gemini response: ```json
+{
+    "framework": {
+        "primary": "vanilla",
+        "css": "vanilla",
+        "build_tools": [],
+        "backend_indicators": []
+    },
+    "layout": {
+        "type": "modern",
+        "structure": "full-width",
+        "breakpoints": ["sm:640px", "md:768px", "lg:1024px", "xl:1280px"],
+        "component_hierarchy": ["Main"]
+    },
+    "colors": {
+        "primary": "#38488f",
+        "secondary": "#fdfdff",
+        "accent": "unknown",
+        "background": "#f0f0f2",
+        "...
+2025-06-17 23:34:10,984 - AnalyzerAgent - DEBUG - Parsing Gemini response: 2303 characters
+2025-06-17 23:34:10,984 - AnalyzerAgent - INFO - Successfully parsed JSON using pattern 0
+2025-06-17 23:34:10,985 - AnalyzerAgent - INFO - Completed vision analysis
+2025-06-17 23:34:10,985 - AnalyzerAgent - INFO - Cloning requirements found
+2025-06-17 23:34:10,985 - AnalyzerAgent - INFO - Component found: components/Main.html
+2025-06-17 23:34:10,985 - AnalyzerAgent - INFO - Page found: index.html
+2025-06-17 23:34:10,985 - AnalyzerAgent - INFO - Style found: style.css
+2025-06-17 23:34:10,986 - AnalyzerAgent - ERROR - Error logging analysis result: "Attempt to overwrite 'name' in LogRecord"

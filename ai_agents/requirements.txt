@@ -1,0 +1,33 @@
+# Core dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+playwright==1.40.0
+google-generativeai==0.3.2
+google-cloud-aiplatform==1.38.0
+
+# Image processing
+opencv-python==4.8.1.78
+scikit-image==0.22.0
+Pillow==10.1.0
+numpy==1.25.2
+
+# Utilities
+python-dotenv==1.0.0
+requests==2.31.0
+aiofiles==23.2.1
+python-multipart==0.0.6
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+httpx==0.25.2
+
+# Added from the code block
+jinja2==3.1.2
+loguru==0.7.2
+typing_extensions==4.8.0
+
+# Added from the code block
+pytesseract==0.3.10
+beautifulsoup4==4.12.3
