@@ -49,21 +49,20 @@ class GeneratorAgent:
         """
         self.logger.info("Starting code generation process...")
         # Robust framework selection
-        framework = "react"
-        framework_dict = analysis.get("framework")
-        if isinstance(framework_dict, dict):
-            primary = framework_dict.get("primary")
-            if isinstance(primary, str) and primary:
-                framework = primary
-        if not isinstance(framework, str) or not framework:
-            framework = "react"
+        framework = target_framework.lower() if target_framework else "react"
+        detected_framework = analysis.get("framework", {}).get("primary", "unknown").lower()
+        if detected_framework != "unknown" and framework != detected_framework:
+            self.logger.warning(f"Framework mismatch: Requested '{framework}', Detected '{detected_framework}'. Using requested framework '{framework}'.")
+        else:
+            framework = detected_framework if detected_framework != "unknown" else framework
         self.logger.info(f"Target framework: {framework}")
+        
         project_structure = {}
         config_files = {}
-        # Ensure package_json is always present
-        package_json = analysis.get("cloning_requirements", {}).get("package_json")
-        if not isinstance(package_json, dict) or not package_json:
-            package_json = self._generate_package_json({}, framework)
+        # Ensure package_json is always present for non-vanilla frameworks
+        package_json = analysis.get("cloning_requirements", {}).get("package_json", {})
+        if not package_json or framework == "vanilla":
+            package_json = self._generate_package_json(analysis, framework)
         assets = analysis.get("cloning_requirements", {}).get("assets", [])
         build_commands = analysis.get("cloning_requirements", {}).get("build_commands", [])
         dev_commands = analysis.get("cloning_requirements", {}).get("dev_commands", [])
@@ -112,13 +111,16 @@ class GeneratorAgent:
             if not any(f for f in project_structure if f.lower().endswith("app.vue")):
                 project_structure["src/App.vue"] = "<template>\n  <div>Hello from Vue App!</div>\n</template>\n<script>\nexport default { name: 'App' }\n</script>"
             if not any(f for f in project_structure if f.lower().endswith("index.html")):
-                project_structure["public/index.html"] = "<!DOCTYPE html>\n<html lang='en'>\n  <head>\n    <meta charset='UTF-8' />\n    <meta name='viewport' content='width=device-width, initial-scale=1.0' />
-    <title>Cloned Vue App</title>\n  </head>\n  <body>\n    <div id='app'></div>\n  </body>\n</html>"
+                project_structure["public/index.html"] = """<!DOCTYPE html>\n<html lang='en'>\n  <head>\n    <meta charset='UTF-8' />\n    <meta name='viewport' content='width=device-width, initial-scale=1.0' />
+    <title>Cloned Vue App</title>\n  </head>\n  <body>\n    <div id='app'></div>\n  </body>\n</html>"""
         elif framework == "vanilla":
+            css_framework = analysis.get("framework", {}).get("css", "none")
             if not any(f for f in project_structure if f.lower().endswith("index.html")):
-                project_structure["index.html"] = "<!DOCTYPE html>\n<html lang='en'>\n  <head>\n    <meta charset='UTF-8' />\n    <meta name='viewport' content='width=device-width, initial-scale=1.0' />\n    <title>Cloned Vanilla App</title>\n  </head>\n  <body>\n    <h1>Hello from Vanilla JS!</h1>\n    <script src='main.js'></script>\n  </body>\n</html>"
+                project_structure["index.html"] = self._generate_vanilla_component(analysis)
             if not any(f for f in project_structure if f.lower().endswith("main.js")):
                 project_structure["main.js"] = "console.log('Hello from Vanilla JS!');"
+            if css_framework == "tailwind" and not any(f for f in project_structure if f.lower().endswith(".css")):
+                project_structure["css/styles.css"] = "/* Tailwind styles are included via CDN in index.html */"
 
         # Ensure .gitignore is always present
         if ".gitignore" not in config_files and ".gitignore" not in project_structure:
@@ -128,8 +130,8 @@ class GeneratorAgent:
         if "README.md" not in config_files and "README.md" not in project_structure:
             config_files["README.md"] = self._generate_readme(framework)
 
-        # Ensure package.json is always present in config_files
-        if "package.json" not in config_files and package_json:
+        # Ensure package.json is always present in config_files for non-vanilla frameworks
+        if framework != "vanilla" and "package.json" not in config_files and package_json:
             config_files["package.json"] = json.dumps(package_json, indent=2)
 
         generated_project = GeneratedProject(
@@ -149,7 +151,6 @@ class GeneratorAgent:
         return generated_project
 
     async def _save_project(self, generated_project: GeneratedProject, subdir: str = "") -> None:
-        import shutil
         timestamp = int(time.time())
         project_name = f"cloned_{generated_project.framework}_{timestamp}"
         base_dir = os.path.join(self.config.output_dir, project_name)
@@ -161,7 +162,7 @@ class GeneratorAgent:
             with open(abs_path, "w", encoding="utf-8") as f:
                 f.write(content)
         # Save package.json if present
-        if generated_project.package_json:
+        if generated_project.package_json and generated_project.framework != "vanilla":
             with open(os.path.join(output_dir, "package.json"), "w", encoding="utf-8") as f:
                 f.write(json.dumps(generated_project.package_json, indent=2))
         # Save config files if present
@@ -175,26 +176,119 @@ class GeneratorAgent:
                     f.write(str(content))
         self.logger.info(f"Project saved to {output_dir}")
     
-    def _determine_framework(self, analysis: Dict, target_framework: str = None) -> str:
-        """Determine the best framework for the project"""
-        if target_framework:
-            return target_framework.lower()
-        
-        detected_framework = analysis.get("framework", {}).get("primary", "unknown")
-        
-        # Framework mapping and fallbacks
-        framework_map = {
-            "react": "react",
-            "next": "next",
-            "nextjs": "next",
-            "vue": "vue",
-            "vuejs": "vue",
-            "angular": "angular",
-            "svelte": "svelte",
-            "unknown": "react"  # Default fallback
+    def _generate_package_json(self, analysis: Dict, framework: str) -> Dict:
+        """Generate package.json based on framework"""
+        css_framework = analysis.get("framework", {}).get("css", "none")
+        base_package = {
+            "name": "generated-website",
+            "version": "1.0.0",
+            "description": "Generated website clone",
+            "main": "index.js",
+            "scripts": {},
+            "dependencies": {},
+            "devDependencies": {}
         }
         
-        return framework_map.get(detected_framework.lower(), "react")
+        if framework == "react":
+            base_package.update({
+                "scripts": {
+                    "start": "react-scripts start",
+                    "build": "react-scripts build",
+                    "test": "react-scripts test",
+                    "eject": "react-scripts eject"
+                },
+                "dependencies": {
+                    "react": "^18.2.0",
+                    "react-dom": "^18.2.0",
+                    "react-router-dom": "^6.8.0",
+                    "react-scripts": "5.0.1"
+                },
+                "devDependencies": {
+                    "tailwindcss": "^3.2.0",
+                    "autoprefixer": "^10.4.0",
+                    "postcss": "^8.4.0"
+                } if css_framework == "tailwind" else {}
+            })
+            
+        elif framework == "next":
+            base_package.update({
+                "scripts": {
+                    "dev": "next dev",
+                    "build": "next build",
+                    "start": "next start",
+                    "lint": "next lint"
+                },
+                "dependencies": {
+                    "next": "^13.1.0",
+                    "react": "^18.2.0",
+                    "react-dom": "^18.2.0"
+                },
+                "devDependencies": {
+                    "tailwindcss": "^3.2.0",
+                    "autoprefixer": "^10.4.0",
+                    "postcss": "^8.4.0",
+                    "eslint": "^8.0.0",
+                    "eslint-config-next": "^13.1.0"
+                } if css_framework == "tailwind" else {}
+            })
+            
+        elif framework == "vue":
+            base_package.update({
+                "scripts": {
+                    "serve": "vue-cli-service serve",
+                    "build": "vue-cli-service build",
+                    "lint": "vue-cli-service lint"
+                },
+                "dependencies": {
+                    "vue": "^3.2.0",
+                    "vue-router": "^4.1.0"
+                },
+                "devDependencies": {
+                    "@vue/cli-service": "^5.0.0",
+                    "tailwindcss": "^3.2.0",
+                    "autoprefixer": "^10.4.0",
+                    "postcss": "^8.4.0"
+                } if css_framework == "tailwind" else {}
+            })
+            
+        elif framework == "angular":
+            base_package.update({
+                "scripts": {
+                    "ng": "ng",
+                    "start": "ng serve",
+                    "build": "ng build",
+                    "test": "ng test",
+                    "lint": "ng lint"
+                },
+                "dependencies": {
+                    "@angular/core": "^15.0.0",
+                    "@angular/common": "^15.0.0",
+                    "@angular/platform-browser": "^15.0.0",
+                    "@angular/router": "^15.0.0"
+                },
+                "devDependencies": {
+                    "@angular/cli": "^15.0.0",
+                    "@angular/compiler-cli": "^15.0.0",
+                    "typescript": "^4.8.0"
+                }
+            })
+        
+        elif framework == "vanilla":
+            base_package.update({
+                "scripts": {
+                    "start": "serve ."
+                },
+                "dependencies": {
+                    "serve": "^14.2.0"
+                } if css_framework != "tailwind" else {},
+                "devDependencies": {
+                    "tailwindcss": "^3.2.0",
+                    "autoprefixer": "^10.4.0",
+                    "postcss": "^8.4.0"
+                } if css_framework == "tailwind" else {}
+            })
+        
+        return base_package
     
     async def _generate_components(self, analysis: Dict, framework: str) -> Dict[str, str]:
         """Generate all components based on analysis"""
@@ -781,38 +875,32 @@ export class {component_name.capitalize()}Component {{
   }}
 }}'''
     
-    async def _generate_vanilla_component(self, component_name: str, analysis: Dict) -> str:
-        """Generate vanilla HTML/CSS/JS component"""
-        return f'''<!-- {component_name.capitalize()} Component -->
-<div class="{component_name.lower()}" id="{component_name.lower()}">
-  <div class="container">
-    <h2>{component_name.capitalize()}</h2>
-    <div class="content">
-      <!-- Add your {component_name} content here -->
-    </div>
-  </div>
-</div>
+    def _generate_vanilla_component(self, analysis: Dict) -> str:
+        """Generate vanilla HTML index page"""
+        css_framework = analysis.get("framework", {}).get("css", "none")
+        components = analysis.get("components", [])
+        component_usage = []
 
-<script>
-class {component_name.capitalize()} {{
-  constructor(element) {{
-    this.element = element;
-    this.init();
-  }}
-  
-  init() {{
-    // Component initialization
-  }}
-}}
+        for component in components:
+            component_usage.append(f'    <div class="{component.lower()}"></div>')
 
-// Initialize component
-document.addEventListener('DOMContentLoaded', function() {{
-  const {component_name.lower()}Element = document.getElementById('{component_name.lower()}');
-  if ({component_name.lower()}Element) {{
-    new {component_name.capitalize()}({component_name.lower()}Element);
-  }}
-}});
-</script>'''
+        tailwind_cdn = '<script src="https://cdn.tailwindcss.com"></script>' if css_framework == "tailwind" else ''
+        
+        return f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Generated Website</title>
+  {tailwind_cdn}
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="icon" href="assets/favicon.ico">
+</head>
+<body>
+{chr(10).join(component_usage)}
+  <script src="main.js"></script>
+</body>
+</html>'''
     
     async def _generate_pages(self, analysis: Dict, framework: str) -> Dict[str, str]:
         """Generate pages/routes based on framework"""
@@ -838,7 +926,7 @@ document.addEventListener('DOMContentLoaded', function() {{
             pages["src/main.js"] = self._generate_vue_main()
             
         elif framework == "vanilla":
-            pages["index.html"] = self._generate_vanilla_html(analysis)
+            pages["index.html"] = self._generate_vanilla_component(analysis)
             pages["about.html"] = self._generate_vanilla_about_html(analysis)
             pages["js/main.js"] = self._generate_vanilla_js(analysis)
         
@@ -1622,113 +1710,7 @@ class Utils {
 // Export for use in other files
 window.Utils = Utils;'''
     
-    def _generate_package_json(self, analysis: Dict, framework: str) -> Dict:
-        """Generate package.json based on framework"""
-        base_package = {
-            "name": "generated-website",
-            "version": "1.0.0",
-            "description": "Generated website clone",
-            "main": "index.js",
-            "scripts": {},
-            "dependencies": {},
-            "devDependencies": {}
-        }
-        
-        if framework == "react":
-            base_package.update({
-                "scripts": {
-                    "start": "react-scripts start",
-                    "build": "react-scripts build",
-                    "test": "react-scripts test",
-                    "eject": "react-scripts eject"
-                },
-                "dependencies": {
-                    "react": "^18.2.0",
-                    "react-dom": "^18.2.0",
-                    "react-router-dom": "^6.8.0",
-                    "react-scripts": "5.0.1"
-                },
-                "devDependencies": {
-                    "tailwindcss": "^3.2.0",
-                    "autoprefixer": "^10.4.0",
-                    "postcss": "^8.4.0"
-                }
-            })
-            
-        elif framework == "next":
-            base_package.update({
-                "scripts": {
-                    "dev": "next dev",
-                    "build": "next build",
-                    "start": "next start",
-                    "lint": "next lint"
-                },
-                "dependencies": {
-                    "next": "^13.1.0",
-                    "react": "^18.2.0",
-                    "react-dom": "^18.2.0"
-                },
-                "devDependencies": {
-                    "tailwindcss": "^3.2.0",
-                    "autoprefixer": "^10.4.0",
-                    "postcss": "^8.4.0",
-                    "eslint": "^8.0.0",
-                    "eslint-config-next": "^13.1.0"
-                }
-            })
-            
-        elif framework == "vue":
-            base_package.update({
-                "scripts": {
-                    "serve": "vue-cli-service serve",
-                    "build": "vue-cli-service build",
-                    "lint": "vue-cli-service lint"
-                },
-                "dependencies": {
-                    "vue": "^3.2.0",
-                    "vue-router": "^4.1.0"
-                },
-                "devDependencies": {
-                    "@vue/cli-service": "^5.0.0",
-                    "tailwindcss": "^3.2.0",
-                    "autoprefixer": "^10.4.0",
-                    "postcss": "^8.4.0"
-                }
-            })
-            
-        elif framework == "angular":
-            base_package.update({
-                "scripts": {
-                    "ng": "ng",
-                    "start": "ng serve",
-                    "build": "ng build",
-                    "test": "ng test",
-                    "lint": "ng lint"
-                },
-                "dependencies": {
-                    "@angular/core": "^15.0.0",
-                    "@angular/common": "^15.0.0",
-                    "@angular/platform-browser": "^15.0.0",
-                    "@angular/router": "^15.0.0"
-                },
-                "devDependencies": {
-                    "@angular/cli": "^15.0.0",
-                    "@angular/compiler-cli": "^15.0.0",
-                    "typescript": "^4.8.0"
-                }
-            })
-        
-        elif framework == "vanilla":
-            base_package.update({
-                "scripts": {
-                    "start": "serve ."
-                },
-                "dependencies": {
-                    "serve": "^14.2.0"
-                }
-            })
-        
-        return base_package
+   
     
     def _generate_config_files(self, analysis: Dict, framework: str) -> Dict[str, str]:
         """Generate configuration files"""
@@ -1758,7 +1740,7 @@ window.Utils = Utils;'''
         base_ignore = """# Dependencies
 node_modules/
 npm-debug.log*
-yarn-debug.log*
+yarn-debug.log* 
 yarn-error.log*
 
 # Production builds
@@ -1886,6 +1868,65 @@ src/
 This project is licensed under the MIT License.
 """
     
+    def _generate_tailwind_config(self, analysis: Dict) -> str:
+        """Generate Tailwind CSS configuration"""
+        colors = analysis.get("colors", {})
+        
+        return f'''module.exports = {{
+  content: [
+    "./src/**/*.{{js,jsx,ts,tsx}}",
+    "./public/index.html",
+  ],
+  theme: {{
+    extend: {{
+      colors: {{
+        primary: "{colors.get('primary', '#3b82f6')}",
+        secondary: "{colors.get('secondary', '#64748b')}",
+        accent: "{colors.get('accent', '#8b5cf6')}",
+      }},
+      fontFamily: {{
+        sans: ['Inter', 'system-ui', 'sans-serif'],
+        serif: ['Georgia', 'serif'],
+      }},
+    }},
+  }},
+  plugins: [],
+}}'''
+    def _generate_tailwind_css(self) -> str:
+        """Generate Tailwind CSS base styles"""
+        return '''@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+  
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    line-height: 1.6;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply px-6 py-2 rounded-lg font-medium transition-colors duration-200;
+  }
+  
+  .btn-primary {
+    @apply bg-blue-600 text-white hover:bg-blue-700;
+  }
+  
+  .btn-secondary {
+    @apply bg-gray-600 text-white hover:bg-gray-700;
+  }
+  
+  .container {
+    @apply max-w-7xl mx-auto px-4 sm:px-6 lg:px-8;
+  }
+}'''
+
     def _generate_postcss_config(self) -> str:
         """Generate PostCSS configuration"""
         return """module.exports = {
@@ -2258,6 +2299,18 @@ const Forms = () => {{
           </div>
           <button type="submit">Send Message</button>
         </form>
+
+  return (
+    <section className="cards">
+      <div className="container">
+        <h2>Our Features</h2>
+        <div className="cards-grid">
+          {{cardsData.map((card, index) => (
+            <div key={{index}} className="card">
+              <div className="card-icon"></div>
+              <h3>{{card.title}}</h3>
+              <p>{{card.description}}</p>
+            </div>
       </div>
     </section>
   );
@@ -2663,7 +2716,7 @@ export default {
 }
 </style>'''
 
-    def _generate_vanilla_html(self, analysis: Dict) -> str:
+    def _generate_vanilla_component(self, analysis: Dict) -> str:
         """Generate vanilla HTML index page"""
         components = analysis.get("components", [])
         component_usage = []

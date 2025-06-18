@@ -3,7 +3,7 @@
 This is a website clone generated using the Generator Agent.
 
 ## Framework
-- **Vanilla**
+- **React**
 
 ## Getting Started
 
@@ -50,7 +50,7 @@ src/
 
 ## Technologies Used
 
-- Vanilla
+- React
 - CSS3/Tailwind CSS
 - Modern JavaScript (ES6+)
 

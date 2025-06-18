@@ -4,9 +4,9 @@ uvicorn[standard]==0.24.0
 pydantic==2.5.0
 playwright==1.40.0
 google-generativeai==0.3.2
-google-cloud-aiplatform==1.38.0
 
 # Image processing
+firecrawl-py
 opencv-python==4.8.1.78
 scikit-image==0.22.0
 Pillow==10.1.0
@@ -16,6 +16,7 @@ numpy==1.25.2
 python-dotenv==1.0.0
 requests==2.31.0
 aiofiles==23.2.1
+aiohttp
 python-multipart==0.0.6
 
 # Testing
