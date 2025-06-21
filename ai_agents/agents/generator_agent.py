@@ -59,76 +59,93 @@ class GeneratorAgent:
                 self.logger.error("Invalid analysis provided")
                 raise ValueError("Invalid analysis structure")
             
-            # Generate complete Next.js project files
-            generation_result = await self._generate_nextjs_files(analysis)
-            
-            if not generation_result:
-                raise ValueError("No files were generated")
-            
-            # Create output directory
             output_path = Path(output_dir)
             output_path.mkdir(parents=True, exist_ok=True)
             
-            # Write all generated files to disk
-            generated_files = []
-            for file_path, content in generation_result.items():
+            generated_files = await self._generate_project_files(analysis, output_path)
+            
+            if not generated_files:
+                raise ValueError("No files were generated")
+            
+            artifact_ids = {}
+            for file_path, content in generated_files.items():
                 full_path = output_path / file_path
                 full_path.parent.mkdir(parents=True, exist_ok=True)
                 
                 with open(full_path, 'w', encoding='utf-8') as f:
                     f.write(content)
-                
-                generated_files.append(str(full_path))
                 self.logger.info(f"Generated file: {full_path}")
-            
-            # Save artifact for WebContainer deployment
-            revision_id = None
-            try:
-                artifact_content = self._create_webcontainer_artifact(generation_result)
-                artifact_part = Part(text=artifact_content)
-                revision_id = await self.artifact_service.save_artifact(
-                    app_name="generator_app",
-                    user_id="user_generator", 
-                    session_id="session_generator",
-                    filename="nextjs_deployment.xml",
-                    artifact=artifact_part
-                )
-                self.logger.info(f"Next.js artifact saved with revision ID: {revision_id}")
-            except Exception as e:
-                self.logger.error(f"Failed to save Next.js artifact: {e}")
-                raise Exception(f"Failed to save Next.js artifact: {e}")
+                
+                try:
+                    artifact_part = Part.from_text(content)
+                    revision_id = await self.artifact_service.save_artifact(
+                        app_name="generator_app",
+                        user_id="user_generator", 
+                        session_id="session_generator",
+                        filename=file_path,
+                        artifact=artifact_part
+                    )
+                    artifact_ids[file_path] = revision_id
+                    self.logger.info(f"Artifact saved for {file_path} with revision ID: {revision_id}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to save artifact for {file_path}: {e}")
             
             result = {
                 "status": "success",
-                "generated_files": generated_files,
-                "output_directory": str(output_path),
-                "artifact_content": artifact_content,
-                "artifact_id": revision_id,
-                "deployment_type": "nextjs",
-                "deployment_ready": True,
-                "file_count": len(generated_files)
+                "generated_files": list(generated_files.keys()),
+                "artifact_ids": artifact_ids,
+                "output_directory": str(output_path.absolute())
             }
             
-            self.logger.info(f"Next.js website generated successfully with {len(generated_files)} files")
+            self.logger.info(f"Next.js website generation completed successfully")
             return result
             
         except Exception as e:
-            self.logger.error(f"Next.js website generation failed: {str(e)}")
+            self.logger.error(f"Website generation failed: {str(e)}")
             return {
                 "status": "error",
                 "error": str(e),
                 "generated_files": [],
-                "output_directory": output_dir,
-                "artifact_content": None,
-                "artifact_id": None,
-                "deployment_type": "nextjs",
-                "deployment_ready": False
+                "artifact_ids": {},
+                "output_directory": output_dir
             }
 
-    async def _generate_nextjs_files(self, analysis: Dict) -> Dict[str, str]:
-        """Generate all required Next.js files based on analysis"""
+    async def _generate_project_files(self, analysis: Dict, output_path: Path) -> Dict[str, str]:
+        prompt = self._create_bolt_style_prompt(analysis)
         
-        # Extract analysis data
+        try:
+            response = await self.model.generate_content_async(prompt)
+            
+            if not response or not response.text:
+                raise ValueError("Empty response from Gemini")
+            
+            self.logger.info("Received response from Gemini, parsing files...")
+            
+            files = self._parse_gemini_response(response.text)
+            
+            if not files:
+                raise ValueError("No files parsed from Gemini response")
+            
+            generated_files = {}
+            for file_path, content in files.items():
+                clean_path = self._clean_file_path(file_path)
+                generated_files[clean_path] = content
+                
+                if clean_path == "package.json":
+                    generated_files[clean_path] = self._enhance_package_json(
+                        content, 
+                        analysis.get("cloning_requirements", {}).get("package_json", {})
+                    )
+            
+            generated_files = self._ensure_critical_nextjs_files(generated_files, analysis)
+            
+            return generated_files
+            
+        except Exception as e:
+            self.logger.error(f"Failed to generate project files: {str(e)}")
+            raise
+
+    def _create_bolt_style_prompt(self, analysis: Dict) -> str:
         colors = analysis.get("colors", {})
         typography = analysis.get("typography", {})
         components = analysis.get("components", [])
@@ -136,71 +153,157 @@ class GeneratorAgent:
         cloning_requirements = analysis.get("cloning_requirements", {})
         interactive_elements = analysis.get("interactive_elements", {})
         
-        if not colors and not typography and not components and not content_structure:
-            raise ValueError("Analysis data is insufficient - missing colors, typography, components, and content structure")
+        base_instruction = """For all designs I create, make them beautiful, not cookie cutter. Make webpages that are fully featured and worthy for production.
+
+By default, this template supports JSX syntax with Tailwind CSS classes, React hooks, and Lucide React for icons. Do not install other packages for UI themes, icons, etc unless absolutely necessary.
+
+Use icons from lucide-react for logos.
+
+Use stock photos from unsplash where appropriate, only valid URLs you know exist. Do not download the images, only link to them in image tags."""
+
+        return f"""{base_instruction}
+
+You are an expert AI assistant and exceptional senior software developer. Generate a complete, production-ready Next.js 14 website using the App Router based on the provided analysis.
+
+SYSTEM CONSTRAINTS:
+- Use Next.js 14 with App Router (app/ directory structure)
+- Use Tailwind CSS for styling
+- Use lucide-react for icons
+- Use React Server Components by default, add "use client" only for interactive components
+- Use 2-space indentation for all code
+- Generate clean, maintainable, modular code
+- Split functionality into reusable components
+
+WEBSITE SPECIFICATIONS:
+
+Colors:
+- Primary: {colors.get('primary', '#3b82f6')}
+- Secondary: {colors.get('secondary', '#64748b')}
+- Accent: {colors.get('accent', '#10b981')}
+- Background: {colors.get('background', '#ffffff')}
+- Text: {colors.get('text', '#111827')}
+
+Typography:
+- Primary Font: {typography.get('primary_font', 'Inter')}
+- Font Sizes: {json.dumps(typography.get('font_sizes', ['text-sm', 'text-base', 'text-lg', 'text-xl']))}
+- Font Weights: {json.dumps(typography.get('font_weights', ['font-normal', 'font-medium', 'font-semibold', 'font-bold']))}
+
+Components Required: {json.dumps(components)}
+
+Content Structure:
+- Sections: {json.dumps(content_structure.get('sections', []))}
+- Text Content: {json.dumps(content_structure.get('text_content', {}))}
+- Images: {json.dumps(content_structure.get('images', []))}
+
+Interactive Elements:
+- Navigation: {json.dumps(interactive_elements.get('navigation', []))}
+- Buttons: {json.dumps(interactive_elements.get('buttons', []))}
+- Forms: {json.dumps(interactive_elements.get('forms', []))}
+- Animations: {json.dumps(interactive_elements.get('animations', []))}
+
+Requirements:
+- NPM Packages: {json.dumps(cloning_requirements.get('npm_packages', ['next', 'react', 'react-dom', 'lucide-react']))}
+- Pages: {json.dumps(cloning_requirements.get('pages', ['Home']))}
+
+INSTRUCTIONS:
+1. Generate a complete Next.js 14 project with App Router
+2. Create app/layout.jsx, app/page.jsx, and all necessary component files as specified in the Components Required section
+3. Include package.json with all required dependencies
+4. Include next.config.js and tailwind.config.js
+5. Use the specified colors and typography throughout
+6. Implement all interactive elements with proper functionality
+7. Use "use client" directive only for components that need interactivity
+8. Create responsive, mobile-first design
+9. Use semantic HTML and proper accessibility attributes
+10. Generate app/globals.css with Tailwind directives
+
+CRITICAL: Return the output as a valid JSON object with file paths as keys and complete file contents as values. Do not use any placeholders or incomplete code.
+
+OUTPUT FORMAT:
+{{
+  "package.json": "complete package.json content...",
+  "next.config.js": "complete next.config.js content...",
+  "tailwind.config.js": "complete tailwind.config.js content...",
+  "app/layout.jsx": "complete layout component...",
+  "app/page.jsx": "complete page component...",
+  "app/globals.css": "complete global styles...",
+  ... // Additional component files as specified in Components Required
+}}
+
+Generate the complete, functional Next.js 14 website now:"""
+
+    def _parse_gemini_response(self, response_text: str) -> Dict[str, str]:
+        try:
+            clean_text = response_text.strip()
+            
+            if clean_text.startswith('```json'):
+                start = clean_text.find('{')
+                end = clean_text.rfind('}') + 1
+                if start != -1 and end > start:
+                    clean_text = clean_text[start:end]
+            elif clean_text.startswith('```'):
+                lines = clean_text.split('\n')
+                json_lines = []
+                in_json = False
+                
+                for line in lines:
+                    if line.strip().startswith('```') and not in_json:
+                        in_json = True
+                        continue
+                    elif line.strip().startswith('```') and in_json:
+                        break
+                    elif in_json:
+                        json_lines.append(line)
+                
+                clean_text = '\n'.join(json_lines)
+            
+            if not clean_text.startswith('{'):
+                start = clean_text.find('{')
+                end = clean_text.rfind('}') + 1
+                if start != -1 and end > start:
+                    clean_text = clean_text[start:end]
+            
+            if not clean_text:
+                raise ValueError("Empty or invalid JSON response from Gemini")
+            
+            files = json.loads(clean_text)
+            
+            if not isinstance(files, dict):
+                raise ValueError("Response is not a valid file structure JSON")
+            
+            self.logger.info(f"Successfully parsed {len(files)} files from response")
+            return files
+            
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Failed to parse response as JSON: {e}")
+            self.logger.debug(f"Response text (first 500 chars): {response_text[:500]}...")
+            raise ValueError(f"Invalid JSON response from Gemini: {e}")
+        except Exception as e:
+            self.logger.error(f"Unexpected error parsing Gemini response: {e}")
+            raise
+
+    def _ensure_critical_nextjs_files(self, files: Dict[str, str], analysis: Dict) -> Dict[str, str]:
+        critical_files = {
+            'package.json': self._create_package_json(analysis),
+            'next.config.js': self._create_next_config(),
+            'postcss.config.js': self._create_postcss_config(),
+            'tailwind.config.js': self._create_tailwind_config(analysis),
+            'app/layout.jsx': self._create_layout_jsx(analysis),
+            'app/page.jsx': self._create_page_jsx(analysis),
+            'app/globals.css': self._create_globals_css(analysis)
+        }
         
-        # Generate each required file
-        files = {}
-        
-        # 1. package.json
-        files["package.json"] = self._generate_package_json(cloning_requirements)
-        
-        # 2. next.config.js
-        files["next.config.js"] = self._generate_next_config()
-        
-        # 3. tailwind.config.js
-        files["tailwind.config.js"] = self._generate_tailwind_config(colors)
-        
-        # 4. postcss.config.js
-        files["postcss.config.js"] = self._generate_postcss_config()
-        
-        # 5. app/layout.jsx
-        files["app/layout.jsx"] = self._generate_layout_jsx(typography, colors)
-        
-        # 6. app/page.jsx - Generate with AI (NO FALLBACK)
-        files["app/page.jsx"] = await self._generate_page_jsx_with_ai(analysis)
-        
-        # 7. app/globals.css
-        files["app/globals.css"] = self._generate_globals_css(colors, typography)
-        
-        # 8. Additional component files if needed
-        component_files = await self._generate_component_files(components, analysis)
-        files.update(component_files)
+        for file_path, default_content in critical_files.items():
+            if file_path not in files:
+                files[file_path] = default_content
+                self.logger.info(f"Added missing critical file: {file_path}")
         
         return files
 
-    def _generate_package_json(self, cloning_requirements: Dict) -> str:
-        npm_packages = cloning_requirements.get('npm_packages', [])
-        
-        # Ensure essential Next.js packages are included
-        essential_packages = {
-            "next": "^14.0.0",
-            "react": "^18.0.0",
-            "react-dom": "^18.0.0",
-            "tailwindcss": "^3.0.0",
-            "autoprefixer": "^10.0.0",
-            "postcss": "^8.0.0",
-            "lucide-react": "^0.263.1"
-        }
-        
-        # Log what packages we're working with
-        if not npm_packages:
-            self.logger.info("No npm packages specified in analysis, using essential packages only")
-        else:
-            self.logger.info(f"Found {len(npm_packages)} npm packages in analysis: {npm_packages}")
-        
-        # Add any additional packages from requirements
-        for package in npm_packages:
-            if package not in essential_packages:
-                essential_packages[package] = "latest"
-                self.logger.info(f"Added additional package: {package}")
-        
-        # Log final package list
-        self.logger.info(f"Final package.json will include {len(essential_packages)} packages")
-        
-        package_json = {
-            "name": "generated-nextjs-website",
-            "version": "0.1.0",
+    def _create_package_json(self, analysis: Dict) -> str:
+        package_data = {
+            "name": "cloned-website",
+            "version": "1.0.0",
             "private": True,
             "scripts": {
                 "dev": "next dev",
@@ -208,67 +311,44 @@ class GeneratorAgent:
                 "start": "next start",
                 "lint": "next lint"
             },
-            "dependencies": essential_packages,
+            "dependencies": {
+                "next": "14.0.0",
+                "react": "^18.2.0",
+                "react-dom": "^18.2.0",
+                "lucide-react": "^0.263.1"
+            },
             "devDependencies": {
-                "eslint": "^8.0.0",
-                "eslint-config-next": "^14.0.0"
+                "autoprefixer": "^10.4.16",
+                "postcss": "^8.4.31",
+                "tailwindcss": "^3.3.5"
             }
         }
         
-        return json.dumps(package_json, indent=2)
+        cloning_reqs = analysis.get("cloning_requirements", {})
+        additional_packages = cloning_reqs.get("npm_packages", [])
+        
+        for package in additional_packages:
+            if package not in package_data["dependencies"]:
+                package_data["dependencies"][package] = "latest"
+        
+        return json.dumps(package_data, indent=2)
 
-    def _generate_next_config(self) -> str:
+    def _create_next_config(self) -> str:
         return """/** @type {import('next').NextConfig} */
 const nextConfig = {
+  experimental: {
+    appDir: true,
+  },
   images: {
-    domains: ['images.unsplash.com', 'unsplash.com'],
-    remotePatterns: [
-      {
-        protocol: 'https',
-        hostname: 'images.unsplash.com',
-      },
-    ],
+    domains: ['images.unsplash.com'],
   },
 }
 
 module.exports = nextConfig
 """
 
-    def _generate_tailwind_config(self, colors: Dict) -> str:
-        if not colors:
-            raise ValueError("Cannot generate tailwind.config.js - no colors provided in analysis")
-            
-        primary = colors.get('primary')
-        secondary = colors.get('secondary')
-        accent = colors.get('accent')
-        
-        if not primary or not secondary or not accent:
-            raise ValueError("Cannot generate tailwind.config.js - missing required colors (primary, secondary, accent)")
-        
-        return f"""/** @type {{import('tailwindcss').Config}} */
-module.exports = {{
-  content: [
-    './pages/**/*.{{js,ts,jsx,tsx,mdx}}',
-    './components/**/*.{{js,ts,jsx,tsx,mdx}}',
-    './app/**/*.{{js,ts,jsx,tsx,mdx}}',
-  ],
-  theme: {{
-    extend: {{
-      colors: {{
-        primary: '{primary}',
-        secondary: '{secondary}',
-        accent: '{accent}',
-      }},
-      fontFamily: {{
-        sans: ['Inter', 'system-ui', 'sans-serif'],
-      }},
-    }},
-  }},
-  plugins: [],
-}}
-"""
-
-    def _generate_postcss_config(self) -> str:
+    def _create_postcss_config(self) -> str:
+        """Create PostCSS configuration file for Tailwind CSS"""
         return """module.exports = {
   plugins: {
     tailwindcss: {},
@@ -277,230 +357,183 @@ module.exports = {{
 }
 """
 
-    def _generate_layout_jsx(self, typography: Dict, colors: Dict) -> str:
-        if not typography:
-            raise ValueError("Cannot generate layout.jsx - no typography data provided in analysis")
-            
-        primary_font = typography.get('primary_font')
-        if not primary_font:
-            raise ValueError("Cannot generate layout.jsx - missing primary_font in typography data")
+    def _create_tailwind_config(self, analysis: Dict) -> str:
+        """Create Tailwind CSS configuration file"""
+        colors = analysis.get("colors", {})
+        typography = analysis.get("typography", {})
         
-        font_import = primary_font.replace(' ', '_')
-        
-        return f"""import './globals.css'
-import {{ {font_import} }} from 'next/font/google'
-
-const font = {font_import}({{ subsets: ['latin'] }})
-
-export const metadata = {{
-  title: 'Generated Website',
-  description: 'A beautiful website generated by AI',
+        return """/** @type {import('tailwindcss').Config} */
+module.exports = {{
+  content: [
+    './app/**/*.{{js,ts,jsx,tsx,mdx}}',
+    './components/**/*.{{js,ts,jsx,tsx,mdx}}',
+  ],
+  theme: {{
+    extend: {{
+      colors: {{
+        primary: '{colors.get('primary', '#3b82f6')}',
+        secondary: '{colors.get('secondary', '#64748b')}',
+        accent: '{colors.get('accent', '#10b981')}',
+        background: '{colors.get('background', '#ffffff')}',
+        text: '{colors.get('text', '#111827')}',
+      }},
+      fontFamily: {{
+        sans: ['{typography.get('primary_font', 'Inter')}', 'system-ui', 'sans-serif'],
+      }},
+      fontSize: {{
+        'xs': '12px',
+        'sm': '14px',
+        'base': '16px',
+        'lg': '18px',
+        'xl': '24px',
+        '2xl': '32px',
+        '3xl': '48px',
+      }},
+      fontWeight: {{
+        thin: 300,
+        normal: 400,
+        medium: 500,
+        semibold: 600,
+        bold: 700,
+      }},
+    }},
+  }},
+  plugins: [],
 }}
+"""
 
-export default function RootLayout({{ children }}) {{
+    def _create_layout_jsx(self, analysis: Dict) -> str:
+        return """import { Inter } from 'next/font/google'
+import './globals.css'
+
+const inter = Inter({ subsets: ['latin'] })
+
+export const metadata = {
+  title: 'Cloned Website',
+  description: 'Generated by AI Website Cloner',
+}
+
+export default function RootLayout({ children }) {
   return (
     <html lang="en">
-      <body className={{font.className}}>
-        {{children}}
-      </body>
+      <body className={inter.className}>{children}</body>
     </html>
+  )
+}
+"""
+
+    def _create_page_jsx(self, analysis: Dict) -> str:
+        components = analysis.get("components", [])
+        component_imports = []
+        component_jsx = []
+        
+        for component in components:
+            if isinstance(component, dict) and "name" in component:
+                component_name = component["name"]
+                component_imports.append(f"import {component_name} from '../components/{component_name}'")
+                component_jsx.append(f"<{component_name} />")
+            elif isinstance(component, str):
+                component_imports.append(f"import {component} from '../components/{component}'")
+                component_jsx.append(f"<{component} />")
+        
+        imports_str = "\n".join(component_imports)
+        components_str = "\n        ".join(component_jsx)
+        
+        return f"""{imports_str}
+
+export default function Home() {{
+  return (
+    <div className="min-h-screen flex flex-col">
+      {components_str}
+      <main className="flex-1 container mx-auto px-4 py-8">
+        <h1 className="text-4xl font-bold text-center mb-8">
+          Welcome to Your Cloned Website
+        </h1>
+        <p className="text-lg text-center text-gray-600">
+          This website was generated using AI technology.
+        </p>
+      </main>
+    </div>
   )
 }}
 """
 
-    def _generate_globals_css(self, colors: Dict, typography: Dict) -> str:
-        if not colors:
-            raise ValueError("Cannot generate globals.css - no colors provided in analysis")
-            
-        background = colors.get('background')
-        text = colors.get('text')
-        
-        if not background or not text:
-            raise ValueError("Cannot generate globals.css - missing background or text colors")
+    def _create_globals_css(self, analysis: Dict) -> str:
+        colors = analysis.get("colors", {})
+        typography = analysis.get("typography", {})
         
         return f"""@tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {{
-  --background: {background};
-  --foreground: {text};
+  --primary: {colors.get('primary', '#3b82f6')};
+  --secondary: {colors.get('secondary', '#64748b')};
+  --accent: {colors.get('accent', '#10b981')};
+  --background: {colors.get('background', '#ffffff')};
+  --text: {colors.get('text', '#111827')};
 }}
 
 body {{
-  color: var(--foreground);
-  background: var(--background);
+  font-family: {typography.get('primary_font', 'Inter')}, system-ui, sans-serif;
+  line-height: 1.6;
+  color: var(--text);
+  background-color: var(--background);
 }}
 
-@layer base {{
-  * {{
-    @apply border-border;
-  }}
-  body {{
-    @apply bg-background text-foreground;
-  }}
+.container {{
+  max-width: 1200px;
+  margin: 0 auto;
 }}
 """
 
-    async def _generate_page_jsx_with_ai(self, analysis: Dict) -> str:
-        """Use AI to generate the main page.jsx content - NO FALLBACK"""
-        prompt = self._create_page_generation_prompt(analysis)
+    def _clean_file_path(self, file_path: str) -> str:
+        clean_path = file_path.strip().lstrip('/').replace('..', '').replace('~', '')
         
+        if not Path(clean_path).suffix:
+            if 'component' in clean_path.lower() or 'app/' in clean_path.lower():
+                clean_path += '.jsx'
+            elif 'css' in clean_path.lower():
+                clean_path += '.css'
+            elif 'config' in clean_path.lower():
+                clean_path += '.js'
+        
+        return clean_path
+
+    def _enhance_package_json(self, generated_content: str, analysis_package_json: Dict) -> str:
         try:
-            response = await self.model.generate_content_async(prompt)
-            
-            if not response or not response.text:
-                raise Exception("AI model returned empty response for page.jsx generation")
-            
-            # Extract JSX code from response
-            jsx_code = self._extract_jsx_from_response(response.text)
-            
-            if not jsx_code:
-                raise Exception("Failed to extract valid JSX code from AI response")
-                
-            return jsx_code
-            
-        except Exception as e:
-            self.logger.error(f"Failed to generate page.jsx with AI: {str(e)}")
-            raise Exception(f"Failed to generate page.jsx with AI: {str(e)}")
-
-    def _create_page_generation_prompt(self, analysis: Dict) -> str:
-        colors = analysis.get("colors", {})
-        typography = analysis.get("typography", {})
-        components = analysis.get("components", [])
-        content_structure = analysis.get("content_structure", {})
+            package_data = json.loads(generated_content)
+        except json.JSONDecodeError:
+            self.logger.warning("Invalid package.json content, using default")
+            return self._create_package_json({})
         
-        if not colors and not typography and not components and not content_structure:
-            raise ValueError("Cannot create generation prompt - analysis data is insufficient")
+        package_data.setdefault("dependencies", {})
+        package_data["dependencies"].update({
+            "next": "14.0.0",
+            "react": "^18.2.0", 
+            "react-dom": "^18.2.0",
+            "lucide-react": "^0.263.1"
+        })
         
-        return f"""Generate ONLY the JSX code for a Next.js app/page.jsx file. Do not include any explanations or markdown formatting.
-
-Requirements:
-- Use Next.js 14 App Router format
-- Use Tailwind CSS classes
-- Use lucide-react icons
-- Make it responsive and modern
-- Include proper semantic HTML
-
-Colors: {json.dumps(colors)}
-Typography: {json.dumps(typography)}
-Components: {json.dumps(components)}
-Content Structure: {json.dumps(content_structure)}
-
-Return ONLY the complete JSX code for the page component, starting with imports and ending with the export statement."""
-
-    def _extract_jsx_from_response(self, response_text: str) -> str:
-        """Extract JSX code from AI response"""
-        if not response_text or not response_text.strip():
-            raise ValueError("AI response is empty or invalid")
-            
-        # Remove markdown code blocks if present
-        response_text = response_text.strip()
-        if response_text.startswith('```'):
-            lines = response_text.split('\n')
-            if lines[0].startswith('```'):
-                lines = lines[1:]
-            if lines[-1].startswith('```'):
-                lines = lines[:-1]
-            response_text = '\n'.join(lines)
+        if analysis_package_json.get("dependencies"):
+            package_data["dependencies"].update(analysis_package_json["dependencies"])
         
-        # Validate that it contains JSX code
-        if 'export default' not in response_text:
-            raise ValueError("AI response does not contain valid JSX component")
+        package_data.setdefault("scripts", {})
+        package_data["scripts"].update({
+            "dev": "next dev",
+            "build": "next build", 
+            "start": "next start"
+        })
         
-        # Ensure it starts with proper imports
-        if not response_text.strip().startswith('import') and not response_text.strip().startswith("'use client'"):
-            response_text = "import React from 'react'\n" + response_text
-        
-        return response_text
-
-    async def _generate_component_files(self, components: List, analysis: Dict) -> Dict[str, str]:
-        """Generate additional component files if needed - NO FALLBACK"""
-        files = {}
-        
-        if not components:
-            self.logger.info("No components specified in analysis, skipping component file generation")
-            return files
-        
-        # Generate components based on analysis only
-        for component in components:
-            if isinstance(component, dict):
-                component_name = component.get('name', '').lower()
-                component_type = component.get('type', '').lower()
-                
-                if 'navigation' in component_name or 'nav' in component_type:
-                    files["components/Navigation.jsx"] = await self._generate_ai_component('Navigation', component, analysis)
-                elif 'hero' in component_name or 'banner' in component_type:
-                    files["components/Hero.jsx"] = await self._generate_ai_component('Hero', component, analysis)
-                elif 'footer' in component_name:
-                    files["components/Footer.jsx"] = await self._generate_ai_component('Footer', component, analysis)
-        
-        return files
-
-    async def _generate_ai_component(self, component_name: str, component_data: Dict, analysis: Dict) -> str:
-        """Generate component using AI - NO FALLBACK"""
-        prompt = f"""Generate ONLY the JSX code for a React component named {component_name}.
-
-Component Data: {json.dumps(component_data)}
-Analysis Context: {json.dumps(analysis)}
-
-Requirements:
-- Use functional React component with hooks if needed
-- Use Tailwind CSS classes
-- Use lucide-react icons where appropriate
-- Make it responsive and modern
-- Include proper semantic HTML
-
-Return ONLY the complete JSX code for the component."""
-
-        try:
-            response = await self.model.generate_content_async(prompt)
-            
-            if not response or not response.text:
-                raise Exception(f"AI model returned empty response for {component_name} component generation")
-            
-            jsx_code = self._extract_jsx_from_response(response.text)
-            
-            if not jsx_code:
-                raise Exception(f"Failed to extract valid JSX code from AI response for {component_name}")
-                
-            return jsx_code
-            
-        except Exception as e:
-            self.logger.error(f"Failed to generate {component_name} component with AI: {str(e)}")
-            raise Exception(f"Failed to generate {component_name} component with AI: {str(e)}")
-
-    def _create_webcontainer_artifact(self, files: Dict[str, str]) -> str:
-        """Create WebContainer artifact for deployment"""
-        if not files:
-            raise ValueError("Cannot create WebContainer artifact - no files generated")
-            
-        file_actions = []
-        
-        for file_path, content in files.items():
-            if not content or not content.strip():
-                raise ValueError(f"File {file_path} has empty content - cannot create artifact")
-            file_actions.append(f'<boltAction type="file" filePath="{file_path}">\n{content}\n</boltAction>')
-        
-        return f"""<boltArtifact id="nextjs-website" title="Next.js Website">
-<boltAction type="shell">
-npm install
-</boltAction>
-
-{''.join(file_actions)}
-
-<boltAction type="shell">
-npm run dev
-</boltAction>
-</boltArtifact>"""
+        return json.dumps(package_data, indent=2)
 
     async def batch_generate(self, analyses: List[Dict], output_base_dir: str):
-        self.logger.info(f"Starting batch Next.js generation for {len(analyses)} analyses")
+        self.logger.info(f"Starting batch generation for {len(analyses)} analyses")
         results = []
         
         for i, analysis in enumerate(analyses):
             try:
-                output_dir = f"{output_base_dir}/project_{i}"
+                output_dir = os.path.join(output_base_dir, f"website_{i}")
                 result = await self.generate_website(analysis, output_dir)
                 result["batch_index"] = i
                 results.append(result)
@@ -508,10 +541,17 @@ npm run dev
                 await asyncio.sleep(0.1)
                 
             except Exception as e:
-                self.logger.error(f"Failed to generate Next.js project {i+1}: {str(e)}")
-                raise Exception(f"Failed to generate Next.js project {i+1}: {str(e)}")
+                self.logger.error(f"Failed to generate website {i+1}: {str(e)}")
+                results.append({
+                    "status": "error",
+                    "error": str(e),
+                    "generated_files": [],
+                    "artifact_ids": [],
+                    "output_directory": os.path.join(output_base_dir, f"website_{i}"),
+                    "batch_index": i
+                })
         
-        self.logger.info(f"Batch Next.js generation completed: {len(results)} results")
+        self.logger.info(f"Batch generation completed: {len(results)} results")
         return results
 
     def save_generation_result(self, result: Dict, output_path: str):
@@ -522,10 +562,10 @@ npm run dev
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump(result, f, indent=2)
             
-            self.logger.info(f"Next.js generation result saved to: {output_path}")
+            self.logger.info(f"Generation result saved to: {output_path}")
             
         except Exception as e:
-            self.logger.error(f"Failed to save Next.js generation result: {e}")
+            self.logger.error(f"Failed to save generation result: {e}")
             raise
 
     def __del__(self):
