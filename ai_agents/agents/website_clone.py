@@ -1,4 +1,3 @@
-
 from config.system_config import SystemConfig, CloneResult, GeneratedProject
 from agents.screenshot_agent import ScreenshotAgent
 from agents.analyzer_agent import AnalyzerAgent
@@ -257,17 +256,31 @@ class WebsiteCloneOrchestrator:
                 self.logger.warning(f"Missing or empty fields in analysis: {missing_fields}")
                 return False
 
-            # Verify components
+            # Verify components exist (should be component names, not file paths)
             components = analysis.get("components", [])
-            essential_components = ["app/layout.jsx", "app/page.jsx"]
-            if not any(comp in components for comp in essential_components):
-                self.logger.warning(f"Missing essential Next.js components: {essential_components}")
+            if not components:
+                self.logger.warning("No components found in analysis")
                 return False
+            
+            # Log the components found for debugging
+            self.logger.info(f"Found components: {components}")
 
-            # Verify package.json
-            package_json = analysis.get("cloning_requirements", {}).get("package_json", {})
-            if not package_json.get("dependencies", {}).get("next"):
-                self.logger.warning("Missing 'next' dependency in package.json")
+            # Verify package.json requirements
+            cloning_reqs = analysis.get("cloning_requirements", {})
+            if not cloning_reqs:
+                self.logger.warning("No cloning requirements found")
+                return False
+            
+            # Check if npm packages are specified
+            npm_packages = cloning_reqs.get("npm_packages", [])
+            if not npm_packages:
+                self.logger.warning("No npm packages specified in cloning requirements")
+                # This is not a critical error, we can use defaults
+
+            # Verify content structure exists
+            content_structure = analysis.get("content_structure", {})
+            if not content_structure:
+                self.logger.warning("No content structure found")
                 return False
 
             self.logger.info("Analysis validation passed")
