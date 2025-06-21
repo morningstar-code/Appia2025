@@ -156,7 +156,7 @@ class WebsiteCloneOrchestrator:
             project_output_dir = f"{output_dir}/project_{timestamp}"
             
             try:
-                generated_project = await self.generator.generate_code(
+                generated_project = await self.generator.generate_website(
                     analysis_result, 
                     project_output_dir
                 )
