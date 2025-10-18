@@ -151,10 +151,13 @@ export function Builder() {
   }, [files, webcontainer]);
 
   async function init() {
-    const response = await axios.post(`${BACKEND_URL}/template`, {
-      prompt: prompt.trim()
-    });
-    setTemplateSet(true);
+    try {
+      console.log('Calling API:', `${BACKEND_URL}/template`);
+      const response = await axios.post(`${BACKEND_URL}/template`, {
+        prompt: prompt.trim()
+      });
+      console.log('API Response:', response.data);
+      setTemplateSet(true);
     
     const {prompts, uiPrompts} = response.data;
 
@@ -184,6 +187,10 @@ export function Builder() {
     })));
 
     setLlmMessages(x => [...x, {role: "assistant", content: stepsResponse.data.response}])
+    } catch (error) {
+      console.error('API Error:', error);
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
