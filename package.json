@@ -1,0 +1,9 @@
+{
+  "name": "appia2025",
+  "version": "1.0.1",
+  "private": true,
+  "description": "AI Website Builder with Claude 3.5 Haiku",
+  "scripts": {
+    "build": "echo 'Build complete'"
+  }
+}
