@@ -177,3 +177,9 @@ The backend uses Anthropic's Claude 3.5 Sonnet model with the following configur
 ## License
 
 This project is licensed under the ISC License.
+
+## Latest Update
+- Fixed Claude model name to claude-3-5-haiku-20241022
+- Updated frontend configuration for Vercel deployment
+- Added proper error handling and debugging
+- Configured Vercel API timeouts
