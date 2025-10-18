@@ -138,7 +138,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       system: "Return either node or react based on what do you think this project should be. Only return a single word either 'node' or 'react'. Do not return anything extra"
     });
 
-    const answer = response.content[0].text; // react or node
+    const answer = (response.content[0] as any).text; // react or node
     
     if (answer === "react") {
       res.json({
