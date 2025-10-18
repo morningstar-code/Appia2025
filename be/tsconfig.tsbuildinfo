@@ -1,1 +1,1 @@
-{"root":["./src/constants.ts","./src/index.ts","./src/prompts.ts","./src/stripindents.ts","./src/defaults/node.ts","./src/defaults/react.ts"],"version":"5.7.2"}
+{"root":["./api/chat.ts","./api/template.ts","./src/constants.ts","./src/index.ts","./src/prompts.ts","./src/stripindents.ts","./src/defaults/node.ts","./src/defaults/react.ts"],"errors":true,"version":"5.7.2"}
