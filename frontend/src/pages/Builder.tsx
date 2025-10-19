@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { StepsList } from '../components/StepsList';
 import { FileExplorer } from '../components/FileExplorer';
@@ -39,6 +39,7 @@ export function Builder() {
   const [files, setFiles] = useState<FileItem[]>([]);
   const [processingStep, setProcessingStep] = useState(false);
   const [workspaceMounted, setWorkspaceMounted] = useState(false);
+  const cwdRef = useRef<string>('');
 
   const upsertFile = useCallback((tree: FileItem[], path: string, content: string): FileItem[] => {
     if (!path) {
@@ -131,7 +132,9 @@ export function Builder() {
         .map((line) => line.trim())
         .filter(Boolean);
 
-      let cwdSegments: string[] = [];
+      let cwdSegments: string[] = cwdRef.current
+        ? cwdRef.current.split('/').filter(Boolean)
+        : [];
 
       const getCwd = () => (cwdSegments.length ? cwdSegments.join('/') : '.');
 
@@ -186,10 +189,12 @@ export function Builder() {
         if (command.startsWith('npm init') || command.startsWith('npm install')) {
           try {
             const cwd = getCwd();
-            const packagePath = cwd === '.' ? 'package.json' : `${cwd}/package.json`;
+            const packagePathRaw = cwd === '.' ? 'package.json' : `${cwd}/package.json`;
+            const packagePath = packagePathRaw.replace(/^\.\//, '');
             const packageJson = await webcontainer.fs.readFile(packagePath, 'utf-8');
             setFiles((prev) => upsertFile(prev, packagePath, packageJson));
-            const lockPath = packagePath.replace(/package\.json$/, 'package-lock.json');
+            const lockPathRaw = packagePath.replace(/package\.json$/, 'package-lock.json');
+            const lockPath = lockPathRaw.replace(/^\.\//, '');
             try {
               const packageLock = await webcontainer.fs.readFile(lockPath, 'utf-8');
               setFiles((prev) => upsertFile(prev, lockPath, packageLock));
@@ -201,6 +206,9 @@ export function Builder() {
           }
         }
       }
+
+      const finalCwd = getCwd();
+      cwdRef.current = finalCwd === '.' ? '' : finalCwd;
     },
     [webcontainer, upsertFile]
   );
@@ -216,8 +224,8 @@ export function Builder() {
         const directory = segments.slice(0, -1).join('/');
         try {
           await webcontainer.fs.mkdir(directory, { recursive: true });
-        } catch (error) {
-          // ignore directory exists errors
+        } catch {
+          // directory already exists
         }
       }
 
@@ -225,6 +233,28 @@ export function Builder() {
     },
     [webcontainer]
   );
+
+  const syncTreeToWebContainer = useCallback(async (items: FileItem[], basePath = '') => {
+    if (!webcontainer) {
+      return;
+    }
+
+    for (const item of items) {
+      const fullPath = basePath ? `${basePath}/${item.name}` : item.name;
+      if (item.type === 'folder') {
+        try {
+          await webcontainer.fs.mkdir(fullPath, { recursive: true });
+        } catch {
+          // ignore errors if folder exists
+        }
+        if (item.children) {
+          await syncTreeToWebContainer(item.children, fullPath);
+        }
+      } else {
+        await writeFileToWebContainer(fullPath, item.content || '');
+      }
+    }
+  }, [webcontainer, writeFileToWebContainer]);
 
   useEffect(() => {
     if (processingStep) {
@@ -252,10 +282,17 @@ export function Builder() {
         if (nextStep.type === StepType.CreateFolder) {
           markStepStatus(nextIndex, 'completed');
         } else if (nextStep.type === StepType.CreateFile && nextStep.path) {
+          const relativePath = nextStep.path.replace(/^\.\//, '');
+          const currentDir = cwdRef.current;
+          const resolvedPath = currentDir
+            ? `${currentDir.replace(/\/$/, '')}/${relativePath}`
+            : relativePath;
+          const normalizedPath = resolvedPath.replace(/^\/+/, '');
+
           const content = nextStep.code || '';
-          setFiles((prev) => upsertFile(prev, nextStep.path!, content));
+          setFiles((prev) => upsertFile(prev, normalizedPath, content));
           if (webcontainer && workspaceMounted) {
-            await writeFileToWebContainer(nextStep.path, content);
+            await writeFileToWebContainer(normalizedPath, content);
           }
           markStepStatus(nextIndex, 'completed');
         } else if (nextStep.type === StepType.RunScript && nextStep.code) {
@@ -274,65 +311,33 @@ export function Builder() {
   }, [steps, processingStep, findNextPendingStep, markStepStatus, runShellCommands, upsertFile, webcontainer, workspaceMounted, writeFileToWebContainer]);
 
   useEffect(() => {
-    const createMountStructure = (files: FileItem[]): Record<string, any> => {
-      const mountStructure: Record<string, any> = {};
-  
-      const processFile = (file: FileItem, isRootFolder: boolean) => {  
-        if (file.type === 'folder') {
-          // For folders, create a directory entry
-          mountStructure[file.name] = {
-            directory: file.children ? 
-              Object.fromEntries(
-                file.children.map(child => [child.name, processFile(child, false)])
-              ) 
-              : {}
-          };
-        } else if (file.type === 'file') {
-          if (isRootFolder) {
-            mountStructure[file.name] = {
-              file: {
-                contents: file.content || ''
-              }
-            };
-          } else {
-            // For files, create a file entry with contents
-            return {
-              file: {
-                contents: file.content || ''
-              }
-            };
-          }
-        }
-  
-        return mountStructure[file.name];
-      };
-  
-      // Process each top-level file/folder
-      files.forEach(file => processFile(file, true));
-  
-      return mountStructure;
-    };
-  
-    if (!webcontainer || files.length === 0) {
+    if (!webcontainer || workspaceMounted) {
       return;
     }
 
-    if (!webcontainer || files.length === 0 || workspaceMounted) {
-      return;
-    }
-
-    const mountStructure = createMountStructure(files);
-
-    // Mount the structure if WebContainer is available
     (async () => {
       try {
-        await webcontainer.mount(mountStructure);
+        await webcontainer.mount({});
         setWorkspaceMounted(true);
       } catch (error) {
-        console.error('Failed to mount project files in WebContainer:', error);
+        console.error('Failed to initialize WebContainer workspace:', error);
       }
     })();
-  }, [files, webcontainer, workspaceMounted]);
+  }, [webcontainer, workspaceMounted]);
+
+  useEffect(() => {
+    if (!webcontainer || !workspaceMounted || files.length === 0) {
+      return;
+    }
+
+    (async () => {
+      try {
+        await syncTreeToWebContainer(files);
+      } catch (error) {
+        console.error('Failed to synchronize files with WebContainer:', error);
+      }
+    })();
+  }, [files, webcontainer, workspaceMounted, syncTreeToWebContainer]);
 
   const hasPendingSteps = steps.some((step) => step.status !== 'completed');
 
