@@ -5,6 +5,7 @@ import { FileExplorer } from '../components/FileExplorer';
 import { TabView } from '../components/TabView';
 import { CodeEditor } from '../components/CodeEditor';
 import { PreviewFrame } from '../components/PreviewFrame';
+import { Terminal } from '../components/Terminal';
 import { Step, FileItem, StepType } from '../types';
 import axios from 'axios';
 import { BACKEND_URL } from '../config';
@@ -42,7 +43,12 @@ export function Builder() {
   const [files, setFiles] = useState<FileItem[]>([]);
   const [processingStep, setProcessingStep] = useState(false);
   const [workspaceMounted, setWorkspaceMounted] = useState(false);
+  const [terminalLogs, setTerminalLogs] = useState<string[]>([]);
   const cwdRef = useRef<string>('');
+
+  const addLog = useCallback((message: string) => {
+    setTerminalLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${message}`]);
+  }, []);
 
   const upsertFile = useCallback((tree: FileItem[], path: string, content: string): FileItem[] => {
     if (!path) {
@@ -126,6 +132,7 @@ export function Builder() {
   const runShellCommands = useCallback(
     async (commandBlock: string) => {
       if (!webcontainer) {
+        addLog('ERROR: WebContainer is not ready');
         throw new Error('WebContainer is not ready.');
       }
 
@@ -134,6 +141,8 @@ export function Builder() {
         .flatMap((line) => line.split('&&'))
         .map((line) => line.trim())
         .filter(Boolean);
+      
+      addLog(`Running ${commands.length} command(s)`);
 
       let cwdSegments: string[] = cwdRef.current
         ? cwdRef.current.split('/').filter(Boolean)
@@ -161,15 +170,28 @@ export function Builder() {
 
       const execute = async (program: string, args: string[]) => {
         const cwd = getCwd();
+        const fullCommand = [program, ...args].join(' ');
+        addLog(`$ ${fullCommand}`);
+        
         const process = await webcontainer.spawn(
           program,
           args,
           cwd === '.' ? undefined : { cwd }
         );
+        
+        // Log stdout
+        process.output.pipeTo(new WritableStream({
+          write(data) {
+            addLog(data);
+          }
+        }));
+        
         const exitCode = await process.exit;
         if (exitCode !== 0) {
-          throw new Error(`${[program, ...args].join(' ')} failed with exit code ${exitCode}`);
+          addLog(`ERROR: Command failed with exit code ${exitCode}`);
+          throw new Error(`${fullCommand} failed with exit code ${exitCode}`);
         }
+        addLog(`✓ Command completed successfully`);
       };
 
       for (const command of commands) {
@@ -225,7 +247,7 @@ export function Builder() {
       cwdRef.current = finalCwd === '.' ? '' : finalCwd;
       console.log('[Builder] updated cwd', cwdRef.current);
     },
-    [webcontainer, upsertFile]
+    [webcontainer, upsertFile, addLog]
   );
 
   const writeFileToWebContainer = useCallback(
@@ -272,6 +294,7 @@ export function Builder() {
       try {
         console.log('[Builder] processing step', nextStep.id, StepType[nextStep.type], nextStep.path);
         if (nextStep.type === StepType.CreateFolder) {
+          addLog(`Creating folder: ${nextStep.path}`);
           markStepStatus(nextIndex, 'completed');
         } else if (nextStep.type === StepType.CreateFile && nextStep.path) {
           const relativePath = nextStep.path.replace(/^\.\//, '');
@@ -281,11 +304,13 @@ export function Builder() {
             : relativePath;
           const normalizedPath = resolvedPath.replace(/^\/+/, '');
 
+          addLog(`Creating file: ${normalizedPath}`);
           const content = nextStep.code || '';
           setFiles((prev) => upsertFile(prev, normalizedPath, content));
           if (webcontainer && workspaceMounted) {
             console.log('[Builder] writing file to WebContainer', normalizedPath);
             await writeFileToWebContainer(normalizedPath, content);
+            addLog(`✓ File created: ${normalizedPath}`);
           }
           markStepStatus(nextIndex, 'completed');
         } else if (nextStep.type === StepType.RunScript && nextStep.code) {
@@ -297,12 +322,13 @@ export function Builder() {
         }
       } catch (error) {
         console.error('Failed to process step:', error);
+        addLog(`ERROR: ${error instanceof Error ? error.message : 'Unknown error'}`);
         markStepStatus(nextIndex, 'completed');
       } finally {
         setProcessingStep(false);
       }
     })();
-  }, [steps, processingStep, findNextPendingStep, markStepStatus, runShellCommands, upsertFile, webcontainer, workspaceMounted, writeFileToWebContainer]);
+  }, [steps, processingStep, findNextPendingStep, markStepStatus, runShellCommands, upsertFile, webcontainer, workspaceMounted, writeFileToWebContainer, addLog]);
 
   useEffect(() => {
     if (!webcontainer || workspaceMounted) {
@@ -450,24 +476,27 @@ export function Builder() {
       
       <div className="flex-1 overflow-hidden">
         <div className="h-full grid grid-cols-4 gap-6 p-6">
-          <div className="col-span-1 space-y-6 overflow-auto">
+          <div className="col-span-1 space-y-4 overflow-auto">
             <div>
-              <div className="max-h-[75vh] overflow-scroll">
+              <div className="max-h-[40vh] overflow-scroll">
                 <StepsList
                   steps={steps}
                   currentStep={currentStep}
                   onStepClick={setCurrentStep}
                 />
               </div>
-              <div>
-                <div className='flex'>
-                  <br />
-                  {(loading || !templateSet || hasPendingSteps) && <Loader />}
-                  {!(loading || !templateSet || hasPendingSteps) && <div className='flex'>
-                    <textarea value={userPrompt} onChange={(e) => {
-                    setPrompt(e.target.value)
-                  }} className='p-2 w-full'></textarea>
-                  <button onClick={async () => {
+            </div>
+            <div className="h-[30vh]">
+              <Terminal logs={terminalLogs} />
+            </div>
+            <div>
+              <div className='flex'>
+                {(loading || !templateSet || hasPendingSteps) && <Loader />}
+                {!(loading || !templateSet || hasPendingSteps) && <div className='flex w-full'>
+                  <textarea value={userPrompt} onChange={(e) => {
+                  setPrompt(e.target.value)
+                }} className='p-2 w-full'></textarea>
+                <button onClick={async () => {
                     const newMessage = {
                       role: "user" as "user",
                       content: userPrompt
@@ -494,8 +523,7 @@ export function Builder() {
                     });
 
                   }} className='bg-purple-400 px-4'>Send</button>
-                  </div>}
-                </div>
+                </div>}
               </div>
             </div>
           </div>
