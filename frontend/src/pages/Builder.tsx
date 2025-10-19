@@ -379,6 +379,33 @@ export function Builder() {
     addLog(`Created default package.json at ${packagePath}`);
   }, [webcontainer, writeFileToWebContainer, addLog]);
 
+  const appendSteps = useCallback((rawSteps: Step[]) => {
+    if (!rawSteps.length) {
+      return;
+    }
+
+    setSteps(prev => {
+      const existingKeys = new Set(
+        prev.map(step => `${step.type}|${step.title}|${step.path ?? ''}`)
+      );
+
+      let nextId = prev.length ? prev[prev.length - 1].id + 1 : 1;
+      const stepsToAdd = rawSteps
+        .filter(step => !existingKeys.has(`${step.type}|${step.title}|${step.path ?? ''}`))
+        .map(step => ({
+          ...step,
+          id: nextId++,
+          status: 'pending' as const
+        }));
+
+      if (!stepsToAdd.length) {
+        return prev;
+      }
+
+      return [...prev, ...stepsToAdd];
+    });
+  }, []);
+
   useEffect(() => {
     if (processingStep) {
       return;
@@ -532,14 +559,7 @@ export function Builder() {
             // Parse and update steps as they come in
             try {
               const newSteps = parseXml(fullResponse);
-              setSteps(s => {
-                const existingIds = new Set(s.map(step => step.id));
-                const stepsToAdd = newSteps.filter((step: Step) => !existingIds.has(step.id));
-                return [...s, ...stepsToAdd.map((x: Step) => ({
-                  ...x,
-                  status: "pending" as "pending"
-                }))];
-              });
+              appendSteps(newSteps);
             } catch (e) {
               // Partial XML, keep going
             }
@@ -581,14 +601,7 @@ export function Builder() {
 
     // Final parse to ensure we have all steps
     const finalSteps = parseXml(fullResponse);
-    setSteps(s => {
-      const existingIds = new Set(s.map(step => step.id));
-      const stepsToAdd = finalSteps.filter((step: Step) => !existingIds.has(step.id));
-      return [...s, ...stepsToAdd.map((x: Step) => ({
-      ...x,
-      status: "pending" as "pending"
-      }))];
-    });
+    appendSteps(finalSteps);
 
     setLlmMessages([...prompts, prompt].map(content => ({
       role: "user",
