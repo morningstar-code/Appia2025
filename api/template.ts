@@ -2,7 +2,7 @@ import { VercelRequest, VercelResponse } from '@vercel/node';
 import Anthropic from "@anthropic-ai/sdk";
 
 const anthropic = new Anthropic({
-  apiKey: process.env.CLAUDE_KEY,
+  apiKey: process.env.CLAUDE_KEY || process.env.ANTHROPIC_API_KEY,
 });
 
 const BASE_PROMPT = "For all designs I ask you to make, have them be beautiful, not cookie cutter. Make webpages that are fully featured and worthy for production.\n\nBy default, this template supports JSX syntax with Tailwind CSS classes, React hooks, and Lucide React for icons. Do not install other packages for UI themes, icons, etc unless absolutely necessary or I request them.\n\nUse icons from lucide-react for logos.\n\nUse stock photos from unsplash where appropriate, only valid URLs you know exist. Do not download the images, only link to them in image tags.\n\n";
@@ -124,6 +124,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ message: 'Method not allowed' });
   }
+
+  // Debug environment variables
+  console.log('Environment variables:', {
+    CLAUDE_KEY: process.env.CLAUDE_KEY ? 'SET' : 'NOT SET',
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ? 'SET' : 'NOT SET',
+    NODE_ENV: process.env.NODE_ENV
+  });
 
   try {
     const { prompt } = req.body;

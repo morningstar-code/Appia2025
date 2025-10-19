@@ -2,7 +2,7 @@ import { VercelRequest, VercelResponse } from '@vercel/node';
 import Anthropic from "@anthropic-ai/sdk";
 
 const anthropic = new Anthropic({
-  apiKey: process.env.CLAUDE_KEY,
+  apiKey: process.env.CLAUDE_KEY || process.env.ANTHROPIC_API_KEY,
 });
 
 const getSystemPrompt = () => `You are Bolt, an expert AI assistant and exceptional senior software developer with vast knowledge across multiple programming languages, frameworks, and best practices.
