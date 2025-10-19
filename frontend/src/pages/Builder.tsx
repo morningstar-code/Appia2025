@@ -184,6 +184,14 @@ export function Builder() {
         const parts = command.split(/\s+/);
         const program = parts[0];
         const args = parts.slice(1);
+
+        if (program === 'npm' && args[0] === 'create') {
+          const hasYesFlag = args.includes('--yes') || args.includes('-y');
+          if (!hasYesFlag) {
+            args.splice(1, 0, '--yes');
+          }
+        }
+
         await execute(program, args);
 
         if (command.startsWith('npm init') || command.startsWith('npm install')) {
