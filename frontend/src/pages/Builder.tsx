@@ -276,10 +276,8 @@ export function Builder() {
 
     const nextStep = steps[nextIndex];
 
-    if (nextStep.type === StepType.RunScript) {
-      if (!webcontainer || !workspaceMounted) {
-        return;
-      }
+    if ((nextStep.type === StepType.RunScript || nextStep.type === StepType.CreateFile) && !workspaceMounted) {
+      return;
     }
 
     setProcessingStep(true);
