@@ -143,11 +143,20 @@ export function Builder() {
       return mountStructure;
     };
   
+    if (!webcontainer || files.length === 0) {
+      return;
+    }
+
     const mountStructure = createMountStructure(files);
-  
+
     // Mount the structure if WebContainer is available
-    console.log(mountStructure);
-    webcontainer?.mount(mountStructure);
+    (async () => {
+      try {
+        await webcontainer.mount(mountStructure);
+      } catch (error) {
+        console.error('Failed to mount project files in WebContainer:', error);
+      }
+    })();
   }, [files, webcontainer]);
 
   async function init() {
