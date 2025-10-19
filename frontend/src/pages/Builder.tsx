@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { StepsList } from '../components/StepsList';
 import { FileExplorer } from '../components/FileExplorer';
 import { TabView } from '../components/TabView';
@@ -24,19 +24,17 @@ export default Component;`;
 
 export function Builder() {
   const location = useLocation();
-  const { prompt } = location.state as { prompt: string };
+  const navigate = useNavigate();
+  const routeState = (location.state as { prompt?: string } | null) ?? null;
+  const persistedPrompt = sessionStorage.getItem('builderPrompt') ?? '';
+  const initialPrompt = routeState?.prompt ?? persistedPrompt;
+
+  const [prompt, setPromptValue] = useState(initialPrompt);
   const [userPrompt, setPrompt] = useState("");
   const [llmMessages, setLlmMessages] = useState<{role: "user" | "assistant", content: string;}[]>([]);
   const [loading, setLoading] = useState(false);
   const [templateSet, setTemplateSet] = useState(false);
   const webcontainer = useWebContainer();
-
-  useEffect(() => {
-    console.log('[Builder] webcontainer updated', Boolean(webcontainer));
-    if (webcontainer) {
-      addLog('✓ WebContainer booted and ready');
-    }
-  }, [webcontainer, addLog]);
 
   const [currentStep, setCurrentStep] = useState(1);
   const [activeTab, setActiveTab] = useState<'code' | 'preview'>('code');
@@ -53,6 +51,15 @@ export function Builder() {
   const addLog = useCallback((message: string) => {
     setTerminalLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${message}`]);
   }, []);
+
+  useEffect(() => {
+    if (!initialPrompt) {
+      navigate('/', { replace: true });
+    } else {
+      sessionStorage.setItem('builderPrompt', initialPrompt);
+      setPromptValue(initialPrompt);
+    }
+  }, [initialPrompt, navigate]);
 
   const upsertFile = useCallback((tree: FileItem[], path: string, content: string): FileItem[] => {
     if (!path) {

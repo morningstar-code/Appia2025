@@ -11,7 +11,9 @@ export function Home() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (prompt.trim()) {
-      navigate('/builder', { state: { prompt } });
+      const trimmedPrompt = prompt.trim();
+      sessionStorage.setItem('builderPrompt', trimmedPrompt);
+      navigate('/builder', { state: { prompt: trimmedPrompt } });
     }
   };
 
