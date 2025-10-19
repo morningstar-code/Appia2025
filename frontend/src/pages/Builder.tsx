@@ -34,7 +34,6 @@ export function Builder() {
   const [llmMessages, setLlmMessages] = useState<{role: "user" | "assistant", content: string;}[]>([]);
   const [loading, setLoading] = useState(false);
   const [templateSet, setTemplateSet] = useState(false);
-  const webcontainer = useWebContainer();
 
   const [currentStep, setCurrentStep] = useState(1);
   const [activeTab, setActiveTab] = useState<'code' | 'preview'>('code');
@@ -47,10 +46,14 @@ export function Builder() {
   const [terminalLogs, setTerminalLogs] = useState<string[]>([]);
   const cwdRef = useRef<string>('');
   const waitingForWebContainerLogged = useRef(false);
+  const webcontainerStatusRef = useRef<'booting' | 'ready' | 'error' | null>(null);
+  const hasInitializedRef = useRef(false);
 
   const addLog = useCallback((message: string) => {
     setTerminalLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${message}`]);
   }, []);
+
+  const { instance: webcontainer, error: webcontainerError, isBooting: webcontainerBooting } = useWebContainer();
 
   useEffect(() => {
     if (!initialPrompt) {
@@ -60,6 +63,32 @@ export function Builder() {
       setPromptValue(initialPrompt);
     }
   }, [initialPrompt, navigate]);
+
+  useEffect(() => {
+    let status: 'booting' | 'ready' | 'error';
+    if (webcontainer) {
+      status = 'ready';
+    } else if (webcontainerError) {
+      status = 'error';
+    } else {
+      status = 'booting';
+    }
+
+    if (webcontainerStatusRef.current === status) {
+      return;
+    }
+
+    webcontainerStatusRef.current = status;
+
+    if (status === 'booting') {
+      addLog('⏳ WebContainer is booting...');
+    } else if (status === 'ready') {
+      addLog('✓ WebContainer booted and ready');
+      waitingForWebContainerLogged.current = false;
+    } else if (status === 'error') {
+      addLog(`✗ WebContainer failed to boot: ${webcontainerError instanceof Error ? webcontainerError.message : 'Unknown error'}`);
+    }
+  }, [webcontainer, webcontainerBooting, webcontainerError, addLog]);
 
   const upsertFile = useCallback((tree: FileItem[], path: string, content: string): FileItem[] => {
     if (!path) {
@@ -181,26 +210,31 @@ export function Builder() {
 
       const execute = async (program: string, args: string[]) => {
         const cwd = getCwd();
-        const fullCommand = [program, ...args].join(' ');
-        addLog(`$ ${fullCommand}`);
-        
+        const commandLabel = [program, ...args].filter(Boolean).join(' ');
+        addLog(`$ ${commandLabel}`);
+
         const process = await webcontainer.spawn(
           program,
           args,
           cwd === '.' ? undefined : { cwd }
         );
-        
-        // Log stdout
-        process.output.pipeTo(new WritableStream({
-          write(data) {
-            addLog(data);
-          }
-        }));
-        
+
+        const decoder = new TextDecoder();
+        process.output
+          .pipeTo(new WritableStream({
+            write(data) {
+              const text = decoder.decode(data).trim();
+              if (text) {
+                addLog(text);
+              }
+            }
+          }))
+          .catch(() => {/* ignore stream errors */});
+
         const exitCode = await process.exit;
         if (exitCode !== 0) {
-          addLog(`ERROR: Command failed with exit code ${exitCode}`);
-          throw new Error(`${fullCommand} failed with exit code ${exitCode}`);
+          addLog(`✗ Command failed with exit code ${exitCode}`);
+          throw new Error(`${commandLabel} failed with exit code ${exitCode}`);
         }
         addLog(`✓ Command completed successfully`);
       };
@@ -294,7 +328,7 @@ export function Builder() {
 
     const nextStep = steps[nextIndex];
 
-    if ((nextStep.type === StepType.RunScript || nextStep.type === StepType.CreateFile) && !workspaceMounted) {
+    if ((nextStep.type === StepType.RunScript || nextStep.type === StepType.CreateFile) && (!workspaceMounted || webcontainerError)) {
       if (!waitingForWebContainerLogged.current) {
         addLog(`⏳ Waiting for WebContainer to be ready before executing steps...`);
         waitingForWebContainerLogged.current = true;
@@ -347,18 +381,17 @@ export function Builder() {
         setProcessingStep(false);
       }
     })();
-  }, [steps, processingStep, findNextPendingStep, markStepStatus, runShellCommands, upsertFile, webcontainer, workspaceMounted, writeFileToWebContainer, addLog]);
+  }, [steps, processingStep, findNextPendingStep, markStepStatus, runShellCommands, upsertFile, webcontainer, workspaceMounted, writeFileToWebContainer, addLog, webcontainerError]);
 
   useEffect(() => {
-    if (!webcontainer) {
-      addLog('⏳ WebContainer is booting...');
+    if (!webcontainer || webcontainerError) {
       return;
     }
-    
+
     if (workspaceMounted) {
       return;
     }
-    
+
     addLog('Mounting WebContainer workspace...');
 
     (async () => {
@@ -373,7 +406,20 @@ export function Builder() {
         addLog(`ERROR: Failed to mount workspace - ${error instanceof Error ? error.message : 'Unknown error'}`);
       }
     })();
-  }, [webcontainer, workspaceMounted, addLog]);
+  }, [webcontainer, workspaceMounted, addLog, webcontainerError]);
+
+  useEffect(() => {
+    if (workspaceMounted) {
+      waitingForWebContainerLogged.current = false;
+    }
+  }, [workspaceMounted]);
+
+  useEffect(() => {
+    if (webcontainerError) {
+      waitingForWebContainerLogged.current = false;
+      setProcessingStep(false);
+    }
+  }, [webcontainerError]);
 
   useEffect(() => {
     console.log('[Builder] steps state', steps.map((step) => ({
@@ -494,8 +540,15 @@ export function Builder() {
   }
 
   useEffect(() => {
+    if (hasInitializedRef.current) {
+      return;
+    }
+    if (!prompt.trim()) {
+      return;
+    }
+    hasInitializedRef.current = true;
     init();
-  }, [])
+  }, [prompt]);
 
   return (
     <div className="min-h-screen bg-gray-900 flex flex-col">

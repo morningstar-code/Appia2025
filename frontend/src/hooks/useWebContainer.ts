@@ -1,9 +1,18 @@
 import { useEffect, useState } from "react";
 import { WebContainer } from '@webcontainer/api';
 
-export function useWebContainer() {
-  const [webcontainer, setWebcontainer] = useState<WebContainer>();
-  const [error, setError] = useState<unknown>(null);
+export interface WebContainerState {
+  instance?: WebContainer;
+  error?: unknown;
+  isBooting: boolean;
+}
+
+export function useWebContainer(): WebContainerState {
+  const [state, setState] = useState<WebContainerState>({
+    instance: undefined,
+    error: undefined,
+    isBooting: true,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -13,12 +22,12 @@ export function useWebContainer() {
         const instance = await WebContainer.boot();
         if (!cancelled) {
           console.log('[WebContainer] boot complete');
-          setWebcontainer(instance);
+          setState({ instance, error: undefined, isBooting: false });
         }
       } catch (err) {
         console.error('[WebContainer] boot failed', err);
         if (!cancelled) {
-          setError(err);
+          setState({ instance: undefined, error: err, isBooting: false });
         }
       }
     };
@@ -28,9 +37,5 @@ export function useWebContainer() {
     };
   }, []);
 
-  if (error) {
-    console.error('[WebContainer] unavailable, returning undefined');
-  }
-
-  return webcontainer;
+  return state;
 }
