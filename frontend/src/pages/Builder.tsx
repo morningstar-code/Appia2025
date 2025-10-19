@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { StepsList } from '../components/StepsList';
 import { FileExplorer } from '../components/FileExplorer';
@@ -36,72 +36,242 @@ export function Builder() {
   const [selectedFile, setSelectedFile] = useState<FileItem | null>(null);
   
   const [steps, setSteps] = useState<Step[]>([]);
-
   const [files, setFiles] = useState<FileItem[]>([]);
+  const [processingStep, setProcessingStep] = useState(false);
+  const [workspaceMounted, setWorkspaceMounted] = useState(false);
 
-  useEffect(() => {
-    let originalFiles = [...files];
-    let updateHappened = false;
-    steps.filter(({status}) => status === "pending").map(step => {
-      updateHappened = true;
-      if (step?.type === StepType.CreateFile) {
-        let parsedPath = step.path?.split("/") ?? []; // ["src", "components", "App.tsx"]
-        let currentFileStructure = [...originalFiles]; // {}
-        let finalAnswerRef = currentFileStructure;
-  
-        let currentFolder = ""
-        while(parsedPath.length) {
-          currentFolder =  `${currentFolder}/${parsedPath[0]}`;
-          let currentFolderName = parsedPath[0];
-          parsedPath = parsedPath.slice(1);
-  
-          if (!parsedPath.length) {
-            // final file
-            let file = currentFileStructure.find(x => x.path === currentFolder)
-            if (!file) {
-              currentFileStructure.push({
-                name: currentFolderName,
-                type: 'file',
-                path: currentFolder,
-                content: step.code
-              })
-            } else {
-              file.content = step.code;
-            }
-          } else {
-            /// in a folder
-            let folder = currentFileStructure.find(x => x.path === currentFolder)
-            if (!folder) {
-              // create the folder
-              currentFileStructure.push({
-                name: currentFolderName,
-                type: 'folder',
-                path: currentFolder,
-                children: []
-              })
-            }
-  
-            currentFileStructure = currentFileStructure.find(x => x.path === currentFolder)!.children!;
-          }
+  const upsertFile = useCallback((tree: FileItem[], path: string, content: string): FileItem[] => {
+    if (!path) {
+      return tree;
+    }
+
+    const segments = path.split('/').filter(Boolean);
+
+    const insert = (nodes: FileItem[], index: number, currentPath: string): FileItem[] => {
+      const name = segments[index];
+      const fullPath = currentPath ? `${currentPath}/${name}` : name;
+      let updated = [...nodes];
+      const existingIndex = updated.findIndex((item) => item.path === fullPath);
+
+      if (index === segments.length - 1) {
+        const fileItem: FileItem = {
+          name,
+          path: fullPath,
+          type: 'file',
+          content
+        };
+
+        if (existingIndex >= 0) {
+          updated[existingIndex] = {
+            ...updated[existingIndex],
+            ...fileItem
+          };
+        } else {
+          updated.push(fileItem);
         }
-        originalFiles = finalAnswerRef;
+        return updated;
       }
 
-    })
+      let folder: FileItem;
+      if (existingIndex >= 0 && updated[existingIndex].type === 'folder') {
+        folder = {
+          ...updated[existingIndex],
+          children: updated[existingIndex].children ? [...updated[existingIndex].children!] : []
+        };
+      } else {
+        folder = {
+          name,
+          path: fullPath,
+          type: 'folder',
+          children: []
+        };
+      }
 
-    if (updateHappened) {
+      folder.children = insert(folder.children || [], index + 1, fullPath);
 
-      setFiles(originalFiles)
-      setSteps(steps => steps.map((s: Step) => {
-        return {
-          ...s,
-          status: "completed"
+      if (existingIndex >= 0) {
+        updated[existingIndex] = folder;
+      } else {
+        updated.push(folder);
+      }
+
+      return updated;
+    };
+
+    return insert(tree, 0, '');
+  }, []);
+
+  const findNextPendingStep = useCallback(
+    () => steps.findIndex((step) => step.status === 'pending'),
+    [steps]
+  );
+
+  const markStepStatus = useCallback((index: number, status: Step['status']) => {
+    setSteps((prev) =>
+      prev.map((step, idx) =>
+        idx === index
+          ? {
+              ...step,
+              status
+            }
+          : step
+      )
+    );
+  }, []);
+
+  const runShellCommands = useCallback(
+    async (commandBlock: string) => {
+      if (!webcontainer) {
+        throw new Error('WebContainer is not ready.');
+      }
+
+      const commands = commandBlock
+        .split('\n')
+        .flatMap((line) => line.split('&&'))
+        .map((line) => line.trim())
+        .filter(Boolean);
+
+      let cwdSegments: string[] = [];
+
+      const getCwd = () => (cwdSegments.length ? cwdSegments.join('/') : '.');
+
+      const changeDirectory = (target: string) => {
+        if (target.startsWith('/')) {
+          cwdSegments = [];
         }
-        
-      }))
+
+        const segments = target.split('/').filter(Boolean);
+
+        for (const segment of segments) {
+          if (segment === '..') {
+            cwdSegments.pop();
+          } else if (segment === '.') {
+            continue;
+          } else {
+            cwdSegments.push(segment);
+          }
+        }
+      };
+
+      const execute = async (program: string, args: string[]) => {
+        const cwd = getCwd();
+        const process = await webcontainer.spawn(
+          program,
+          args,
+          cwd === '.' ? undefined : { cwd }
+        );
+        const exitCode = await process.exit;
+        if (exitCode !== 0) {
+          throw new Error(`${[program, ...args].join(' ')} failed with exit code ${exitCode}`);
+        }
+      };
+
+      for (const command of commands) {
+        if (command.startsWith('cd ')) {
+          const target = command.replace(/^cd\s+/, '').trim();
+          changeDirectory(target);
+          continue;
+        }
+
+        if (command.startsWith('npm run dev')) {
+          // PreviewFrame will start the dev server, so skip running it here.
+          continue;
+        }
+
+        const parts = command.split(/\s+/);
+        const program = parts[0];
+        const args = parts.slice(1);
+        await execute(program, args);
+
+        if (command.startsWith('npm init') || command.startsWith('npm install')) {
+          try {
+            const cwd = getCwd();
+            const packagePath = cwd === '.' ? 'package.json' : `${cwd}/package.json`;
+            const packageJson = await webcontainer.fs.readFile(packagePath, 'utf-8');
+            setFiles((prev) => upsertFile(prev, packagePath, packageJson));
+            const lockPath = packagePath.replace(/package\.json$/, 'package-lock.json');
+            try {
+              const packageLock = await webcontainer.fs.readFile(lockPath, 'utf-8');
+              setFiles((prev) => upsertFile(prev, lockPath, packageLock));
+            } catch {
+              // Ignore missing package-lock
+            }
+          } catch (error) {
+            console.warn('package.json not found after command', command, error);
+          }
+        }
+      }
+    },
+    [webcontainer, upsertFile]
+  );
+
+  const writeFileToWebContainer = useCallback(
+    async (path: string, contents: string) => {
+      if (!webcontainer) {
+        return;
+      }
+
+      const segments = path.split('/').filter(Boolean);
+      if (segments.length > 1) {
+        const directory = segments.slice(0, -1).join('/');
+        try {
+          await webcontainer.fs.mkdir(directory, { recursive: true });
+        } catch (error) {
+          // ignore directory exists errors
+        }
+      }
+
+      await webcontainer.fs.writeFile(path, contents);
+    },
+    [webcontainer]
+  );
+
+  useEffect(() => {
+    if (processingStep) {
+      return;
     }
-    console.log(files);
-  }, [steps, files]);
+
+    const nextIndex = findNextPendingStep();
+    if (nextIndex === -1) {
+      return;
+    }
+
+    const nextStep = steps[nextIndex];
+
+    if (nextStep.type === StepType.RunScript) {
+      if (!webcontainer || !workspaceMounted) {
+        return;
+      }
+    }
+
+    setProcessingStep(true);
+    markStepStatus(nextIndex, 'in-progress');
+
+    (async () => {
+      try {
+        if (nextStep.type === StepType.CreateFolder) {
+          markStepStatus(nextIndex, 'completed');
+        } else if (nextStep.type === StepType.CreateFile && nextStep.path) {
+          const content = nextStep.code || '';
+          setFiles((prev) => upsertFile(prev, nextStep.path!, content));
+          if (webcontainer && workspaceMounted) {
+            await writeFileToWebContainer(nextStep.path, content);
+          }
+          markStepStatus(nextIndex, 'completed');
+        } else if (nextStep.type === StepType.RunScript && nextStep.code) {
+          await runShellCommands(nextStep.code);
+          markStepStatus(nextIndex, 'completed');
+        } else {
+          markStepStatus(nextIndex, 'completed');
+        }
+      } catch (error) {
+        console.error('Failed to process step:', error);
+        markStepStatus(nextIndex, 'completed');
+      } finally {
+        setProcessingStep(false);
+      }
+    })();
+  }, [steps, processingStep, findNextPendingStep, markStepStatus, runShellCommands, upsertFile, webcontainer, workspaceMounted, writeFileToWebContainer]);
 
   useEffect(() => {
     const createMountStructure = (files: FileItem[]): Record<string, any> => {
@@ -147,17 +317,24 @@ export function Builder() {
       return;
     }
 
+    if (!webcontainer || files.length === 0 || workspaceMounted) {
+      return;
+    }
+
     const mountStructure = createMountStructure(files);
 
     // Mount the structure if WebContainer is available
     (async () => {
       try {
         await webcontainer.mount(mountStructure);
+        setWorkspaceMounted(true);
       } catch (error) {
         console.error('Failed to mount project files in WebContainer:', error);
       }
     })();
-  }, [files, webcontainer]);
+  }, [files, webcontainer, workspaceMounted]);
+
+  const hasPendingSteps = steps.some((step) => step.status !== 'completed');
 
   async function init() {
     try {
@@ -227,8 +404,8 @@ export function Builder() {
               <div>
                 <div className='flex'>
                   <br />
-                  {(loading || !templateSet) && <Loader />}
-                  {!(loading || !templateSet) && <div className='flex'>
+                  {(loading || !templateSet || hasPendingSteps) && <Loader />}
+                  {!(loading || !templateSet || hasPendingSteps) && <div className='flex'>
                     <textarea value={userPrompt} onChange={(e) => {
                     setPrompt(e.target.value)
                   }} className='p-2 w-full'></textarea>
@@ -273,7 +450,7 @@ export function Builder() {
               {activeTab === 'code' ? (
                 <CodeEditor file={selectedFile} />
               ) : (
-                <PreviewFrame webContainer={webcontainer} files={files} />
+                <PreviewFrame webContainer={webcontainer} files={files} isReady={!hasPendingSteps} />
               )}
             </div>
           </div>

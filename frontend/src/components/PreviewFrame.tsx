@@ -4,22 +4,39 @@ import { FileItem } from '../types';
 
 interface PreviewFrameProps {
   files: FileItem[];
-  webContainer: WebContainer;
+  webContainer?: WebContainer;
+  isReady: boolean;
 }
 
-export function PreviewFrame({ files, webContainer }: PreviewFrameProps) {
+export function PreviewFrame({ files, webContainer, isReady }: PreviewFrameProps) {
   // Track preview lifecycle
   const [url, setUrl] = useState<string | null>(null);
   const [status, setStatus] = useState<'idle' | 'installing' | 'starting' | 'ready' | 'error'>('idle');
   const [error, setError] = useState<string | null>(null);
 
-  const hasPackageJson = useMemo(
-    () => files.some((file) => file.type === 'file' && file.name === 'package.json'),
-    [files]
-  );
+  const packageJsonPath = useMemo(() => {
+    const traverse = (items: FileItem[]): string | null => {
+      for (const item of items) {
+        if (item.type === 'file' && item.name === 'package.json') {
+          return item.path;
+        }
+        if (item.type === 'folder' && item.children) {
+          const result = traverse(item.children);
+          if (result) {
+            return result;
+          }
+        }
+      }
+      return null;
+    };
+
+    return traverse(files);
+  }, [files]);
+
+  const hasPackageJson = Boolean(packageJsonPath);
 
   useEffect(() => {
-    if (!webContainer || files.length === 0) {
+    if (!webContainer || files.length === 0 || !isReady) {
       return;
     }
 
@@ -52,7 +69,7 @@ export function PreviewFrame({ files, webContainer }: PreviewFrameProps) {
 
       // Ensure the virtual filesystem already contains the mounted project
       try {
-        await webContainer.fs.readFile('package.json', 'utf-8');
+        await webContainer.fs.readFile(packageJsonPath!, 'utf-8');
       } catch {
         setStatus('error');
         setError('Preview unavailable: package.json is not accessible in the workspace.');
@@ -64,7 +81,15 @@ export function PreviewFrame({ files, webContainer }: PreviewFrameProps) {
       setUrl(null);
 
       try {
-        installProcess = await webContainer.spawn('npm', ['install']);
+        const packageDir = packageJsonPath?.includes('/')
+          ? packageJsonPath?.split('/').slice(0, -1).join('/')
+          : '.';
+
+        installProcess = await webContainer.spawn(
+          'npm',
+          ['install'],
+          packageDir === '.' ? undefined : { cwd: packageDir }
+        );
         pipeProcessOutput(installProcess, 'install');
         const installExitCode = await installProcess.exit;
         if (cancelled) {
@@ -75,7 +100,11 @@ export function PreviewFrame({ files, webContainer }: PreviewFrameProps) {
         }
 
         setStatus('starting');
-        devProcess = await webContainer.spawn('npm', ['run', 'dev', '--', '--host', '0.0.0.0', '--port', '5173']);
+        devProcess = await webContainer.spawn(
+          'npm',
+          ['run', 'dev', '--', '--host', '0.0.0.0', '--port', '5173'],
+          packageDir === '.' ? undefined : { cwd: packageDir }
+        );
         pipeProcessOutput(devProcess, 'dev');
 
         disposeServerReady = webContainer.on('server-ready', (_port, previewUrl) => {
@@ -114,9 +143,12 @@ export function PreviewFrame({ files, webContainer }: PreviewFrameProps) {
       devProcess?.kill();
       setUrl(null);
     };
-  }, [webContainer, files, hasPackageJson]);
+  }, [webContainer, files, hasPackageJson, isReady, packageJsonPath]);
 
   const renderStatusMessage = () => {
+    if (!isReady) {
+      return 'Waiting for build steps to finish...';
+    }
     if (error) {
       return error;
     }
