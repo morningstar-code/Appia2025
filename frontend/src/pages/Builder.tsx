@@ -436,12 +436,9 @@ export function Builder() {
     
     const {prompts, uiPrompts} = response.data;
 
-    const initialSteps = parseXml(uiPrompts[0]).map((x: Step) => ({
-      ...x,
-      status: "pending"
-    }));
-    addLog(`Parsed ${initialSteps.length} initial steps`);
-    setSteps(initialSteps);
+    // Don't parse uiPrompts as they're just system prompts, not XML
+    // Steps will come from the chat response
+    addLog('Template set, waiting for AI to generate steps...');
 
     setLoading(true);
     addLog('Requesting AI to generate code...');
