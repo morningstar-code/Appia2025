@@ -294,7 +294,11 @@ export function Builder() {
       try {
         console.log('[Builder] processing step', nextStep.id, StepType[nextStep.type], nextStep.path);
         if (nextStep.type === StepType.CreateFolder) {
-          addLog(`Creating folder: ${nextStep.path}`);
+          if (nextStep.path) {
+            addLog(`Creating folder: ${nextStep.path}`);
+          } else {
+            addLog(`Step: ${nextStep.title || 'Artifact created'}`);
+          }
           markStepStatus(nextIndex, 'completed');
         } else if (nextStep.type === StepType.CreateFile && nextStep.path) {
           const relativePath = nextStep.path.replace(/^\.\//, '');
@@ -334,18 +338,22 @@ export function Builder() {
     if (!webcontainer || workspaceMounted) {
       return;
     }
+    
+    addLog('Initializing WebContainer...');
 
     (async () => {
       try {
         console.log('[Builder] mounting empty workspace');
         await webcontainer.mount({});
         console.log('[Builder] workspace mounted');
+        addLog('✓ WebContainer ready');
         setWorkspaceMounted(true);
       } catch (error) {
         console.error('[Builder] Failed to initialize WebContainer workspace:', error);
+        addLog(`ERROR: Failed to initialize WebContainer - ${error instanceof Error ? error.message : 'Unknown error'}`);
       }
     })();
-  }, [webcontainer, workspaceMounted]);
+  }, [webcontainer, workspaceMounted, addLog]);
 
   useEffect(() => {
     console.log('[Builder] steps state', steps.map((step) => ({
@@ -418,27 +426,32 @@ export function Builder() {
 
   async function init() {
     try {
+      addLog('Initializing builder...');
       console.log('Calling API:', `${BACKEND_URL}/template`);
-    const response = await axios.post(`${BACKEND_URL}/template`, {
-      prompt: prompt.trim()
-    });
+      const response = await axios.post(`${BACKEND_URL}/template`, {
+        prompt: prompt.trim()
+      });
       console.log('API Response:', response.data);
-    setTemplateSet(true);
+      setTemplateSet(true);
     
     const {prompts, uiPrompts} = response.data;
 
-    setSteps(parseXml(uiPrompts[0]).map((x: Step) => ({
+    const initialSteps = parseXml(uiPrompts[0]).map((x: Step) => ({
       ...x,
       status: "pending"
-    })));
+    }));
+    addLog(`Parsed ${initialSteps.length} initial steps`);
+    setSteps(initialSteps);
 
     setLoading(true);
+    addLog('Requesting AI to generate code...');
     const fullResponse = await streamChat([...prompts, prompt].map(content => ({
-        role: "user",
-        content
+      role: "user",
+      content
     })));
 
     setLoading(false);
+    addLog('AI response received');
 
     // Final parse to ensure we have all steps
     const finalSteps = parseXml(fullResponse);
