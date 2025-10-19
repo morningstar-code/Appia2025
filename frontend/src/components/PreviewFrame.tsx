@@ -30,7 +30,9 @@ export function PreviewFrame({ files, webContainer, isReady }: PreviewFrameProps
       return null;
     };
 
-    return traverse(files);
+    const result = traverse(files);
+    console.log('[Preview] packageJsonPath', result);
+    return result;
   }, [files]);
 
   const hasPackageJson = Boolean(packageJsonPath);
@@ -84,6 +86,8 @@ export function PreviewFrame({ files, webContainer, isReady }: PreviewFrameProps
         const packageDir = packageJsonPath?.includes('/')
           ? packageJsonPath?.split('/').slice(0, -1).join('/')
           : '.';
+
+        console.log('[Preview] package.json detected at', packageJsonPath, 'cwd', packageDir);
 
         installProcess = await webContainer.spawn(
           'npm',

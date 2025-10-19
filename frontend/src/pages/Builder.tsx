@@ -10,7 +10,6 @@ import axios from 'axios';
 import { BACKEND_URL } from '../config';
 import { parseXml } from '../steps';
 import { useWebContainer } from '../hooks/useWebContainer';
-import { FileNode } from '@webcontainer/api';
 import { Loader } from '../components/Loader';
 
 const MOCK_FILE_CONTENT = `// This is a sample file content
@@ -172,6 +171,7 @@ export function Builder() {
       for (const command of commands) {
         if (command.startsWith('cd ')) {
           const target = command.replace(/^cd\s+/, '').trim();
+          console.log('[Builder] processing cd', target);
           changeDirectory(target);
           continue;
         }
@@ -192,31 +192,34 @@ export function Builder() {
           }
         }
 
+        console.log('[Builder] spawning command', program, args);
         await execute(program, args);
+        console.log('[Builder] command completed', program, args);
 
-        if (command.startsWith('npm init') || command.startsWith('npm install')) {
+        if (command.startsWith('npm init') || command.startsWith('npm install') || command.startsWith('npm create')) {
+          const cwd = getCwd();
+          const packagePathRaw = cwd === '.' ? 'package.json' : `${cwd}/package.json`;
+          const packagePath = packagePathRaw.replace(/^\.\//, '');
           try {
-            const cwd = getCwd();
-            const packagePathRaw = cwd === '.' ? 'package.json' : `${cwd}/package.json`;
-            const packagePath = packagePathRaw.replace(/^\.\//, '');
             const packageJson = await webcontainer.fs.readFile(packagePath, 'utf-8');
             setFiles((prev) => upsertFile(prev, packagePath, packageJson));
-            const lockPathRaw = packagePath.replace(/package\.json$/, 'package-lock.json');
-            const lockPath = lockPathRaw.replace(/^\.\//, '');
-            try {
-              const packageLock = await webcontainer.fs.readFile(lockPath, 'utf-8');
-              setFiles((prev) => upsertFile(prev, lockPath, packageLock));
-            } catch {
-              // Ignore missing package-lock
-            }
           } catch (error) {
-            console.warn('package.json not found after command', command, error);
+            console.warn('[Builder] package.json not accessible after command', command, error);
+          }
+          const lockPathRaw = packagePath.replace(/package\.json$/, 'package-lock.json');
+          const lockPath = lockPathRaw.replace(/^\.\//, '');
+          try {
+            const packageLock = await webcontainer.fs.readFile(lockPath, 'utf-8');
+            setFiles((prev) => upsertFile(prev, lockPath, packageLock));
+          } catch {
+            // Ignore missing package-lock
           }
         }
       }
 
       const finalCwd = getCwd();
       cwdRef.current = finalCwd === '.' ? '' : finalCwd;
+      console.log('[Builder] updated cwd', cwdRef.current);
     },
     [webcontainer, upsertFile]
   );
@@ -242,28 +245,6 @@ export function Builder() {
     [webcontainer]
   );
 
-  const syncTreeToWebContainer = useCallback(async (items: FileItem[], basePath = '') => {
-    if (!webcontainer) {
-      return;
-    }
-
-    for (const item of items) {
-      const fullPath = basePath ? `${basePath}/${item.name}` : item.name;
-      if (item.type === 'folder') {
-        try {
-          await webcontainer.fs.mkdir(fullPath, { recursive: true });
-        } catch {
-          // ignore errors if folder exists
-        }
-        if (item.children) {
-          await syncTreeToWebContainer(item.children, fullPath);
-        }
-      } else {
-        await writeFileToWebContainer(fullPath, item.content || '');
-      }
-    }
-  }, [webcontainer, writeFileToWebContainer]);
-
   useEffect(() => {
     if (processingStep) {
       return;
@@ -285,6 +266,7 @@ export function Builder() {
 
     (async () => {
       try {
+        console.log('[Builder] processing step', nextStep.id, StepType[nextStep.type], nextStep.path);
         if (nextStep.type === StepType.CreateFolder) {
           markStepStatus(nextIndex, 'completed');
         } else if (nextStep.type === StepType.CreateFile && nextStep.path) {
@@ -298,10 +280,12 @@ export function Builder() {
           const content = nextStep.code || '';
           setFiles((prev) => upsertFile(prev, normalizedPath, content));
           if (webcontainer && workspaceMounted) {
+            console.log('[Builder] writing file to WebContainer', normalizedPath);
             await writeFileToWebContainer(normalizedPath, content);
           }
           markStepStatus(nextIndex, 'completed');
         } else if (nextStep.type === StepType.RunScript && nextStep.code) {
+          console.log('[Builder] executing run script step', nextStep.code);
           await runShellCommands(nextStep.code);
           markStepStatus(nextIndex, 'completed');
         } else {
@@ -323,27 +307,24 @@ export function Builder() {
 
     (async () => {
       try {
+        console.log('[Builder] mounting empty workspace');
         await webcontainer.mount({});
+        console.log('[Builder] workspace mounted');
         setWorkspaceMounted(true);
       } catch (error) {
-        console.error('Failed to initialize WebContainer workspace:', error);
+        console.error('[Builder] Failed to initialize WebContainer workspace:', error);
       }
     })();
   }, [webcontainer, workspaceMounted]);
 
   useEffect(() => {
-    if (!webcontainer || !workspaceMounted || files.length === 0) {
-      return;
-    }
-
-    (async () => {
-      try {
-        await syncTreeToWebContainer(files);
-      } catch (error) {
-        console.error('Failed to synchronize files with WebContainer:', error);
-      }
-    })();
-  }, [files, webcontainer, workspaceMounted, syncTreeToWebContainer]);
+    console.log('[Builder] steps state', steps.map((step) => ({
+      id: step.id,
+      type: StepType[step.type],
+      status: step.status,
+      path: step.path
+    })));
+  }, [steps]);
 
   const hasPendingSteps = steps.some((step) => step.status !== 'completed');
 
