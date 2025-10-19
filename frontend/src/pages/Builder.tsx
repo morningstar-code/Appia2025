@@ -282,6 +282,10 @@ export function Builder() {
           continue;
         }
 
+        if (/^npm\s+(install|run)\b/i.test(command)) {
+          await ensurePackageJson(getCwd());
+        }
+
         const parts = command.split(/\s+/);
         const program = parts[0];
         const args = parts.slice(1);
@@ -345,6 +349,35 @@ export function Builder() {
     },
     [webcontainer]
   );
+
+  const ensurePackageJson = useCallback(async (cwd: string) => {
+    if (!webcontainer) {
+      return;
+    }
+
+    const packagePath = cwd === '.' ? 'package.json' : `${cwd}/package.json`;
+    try {
+      await webcontainer.fs.readFile(packagePath, 'utf-8');
+      return;
+    } catch {
+      // create default package.json
+    }
+
+    const defaultPackageJson = {
+      name: 'appia-project',
+      private: true,
+      version: '0.0.0',
+      type: 'module',
+      scripts: {
+        dev: 'vite',
+        build: 'vite build',
+        preview: 'vite preview'
+      }
+    };
+
+    await writeFileToWebContainer(packagePath, JSON.stringify(defaultPackageJson, null, 2));
+    addLog(`Created default package.json at ${packagePath}`);
+  }, [webcontainer, writeFileToWebContainer, addLog]);
 
   useEffect(() => {
     if (processingStep) {
