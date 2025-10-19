@@ -220,18 +220,33 @@ export function Builder() {
         );
 
         const decoder = new TextDecoder();
+        let writer: WritableStreamDefaultWriter<string> | null = null;
+
         process.output
           .pipeTo(new WritableStream({
-            write(data) {
-              const text = decoder.decode(data).trim();
+            async write(data) {
+              const raw = decoder.decode(data);
+              const text = raw.replace(/\x1B\[[0-9;]*m/g, '').trim();
               if (text) {
                 addLog(text);
+              }
+
+              if (/ok to proceed\?/i.test(raw) || /\(y\/n\)/i.test(raw) || /\(y\/N\)/i.test(raw)) {
+                addLog('↩ Auto-confirming prompt with "y"');
+                if (!writer) {
+                  writer = process.input.getWriter();
+                }
+                await writer.write('y\n');
               }
             }
           }))
           .catch(() => {/* ignore stream errors */});
 
         const exitCode = await process.exit;
+        if (writer) {
+          writer.releaseLock();
+        }
+
         if (exitCode !== 0) {
           addLog(`✗ Command failed with exit code ${exitCode}`);
           throw new Error(`${commandLabel} failed with exit code ${exitCode}`);
