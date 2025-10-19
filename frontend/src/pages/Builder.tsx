@@ -33,7 +33,10 @@ export function Builder() {
 
   useEffect(() => {
     console.log('[Builder] webcontainer updated', Boolean(webcontainer));
-  }, [webcontainer]);
+    if (webcontainer) {
+      addLog('✓ WebContainer booted and ready');
+    }
+  }, [webcontainer, addLog]);
 
   const [currentStep, setCurrentStep] = useState(1);
   const [activeTab, setActiveTab] = useState<'code' | 'preview'>('code');
@@ -45,6 +48,7 @@ export function Builder() {
   const [workspaceMounted, setWorkspaceMounted] = useState(false);
   const [terminalLogs, setTerminalLogs] = useState<string[]>([]);
   const cwdRef = useRef<string>('');
+  const waitingForWebContainerLogged = useRef(false);
 
   const addLog = useCallback((message: string) => {
     setTerminalLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${message}`]);
@@ -284,6 +288,10 @@ export function Builder() {
     const nextStep = steps[nextIndex];
 
     if ((nextStep.type === StepType.RunScript || nextStep.type === StepType.CreateFile) && !workspaceMounted) {
+      if (!waitingForWebContainerLogged.current) {
+        addLog(`⏳ Waiting for WebContainer to be ready before executing steps...`);
+        waitingForWebContainerLogged.current = true;
+      }
       return;
     }
 
@@ -335,22 +343,27 @@ export function Builder() {
   }, [steps, processingStep, findNextPendingStep, markStepStatus, runShellCommands, upsertFile, webcontainer, workspaceMounted, writeFileToWebContainer, addLog]);
 
   useEffect(() => {
-    if (!webcontainer || workspaceMounted) {
+    if (!webcontainer) {
+      addLog('⏳ WebContainer is booting...');
       return;
     }
     
-    addLog('Initializing WebContainer...');
+    if (workspaceMounted) {
+      return;
+    }
+    
+    addLog('Mounting WebContainer workspace...');
 
     (async () => {
       try {
         console.log('[Builder] mounting empty workspace');
         await webcontainer.mount({});
         console.log('[Builder] workspace mounted');
-        addLog('✓ WebContainer ready');
+        addLog('✓ WebContainer workspace mounted and ready!');
         setWorkspaceMounted(true);
       } catch (error) {
         console.error('[Builder] Failed to initialize WebContainer workspace:', error);
-        addLog(`ERROR: Failed to initialize WebContainer - ${error instanceof Error ? error.message : 'Unknown error'}`);
+        addLog(`ERROR: Failed to mount workspace - ${error instanceof Error ? error.message : 'Unknown error'}`);
       }
     })();
   }, [webcontainer, workspaceMounted, addLog]);
