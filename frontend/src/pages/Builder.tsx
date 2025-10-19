@@ -30,6 +30,10 @@ export function Builder() {
   const [templateSet, setTemplateSet] = useState(false);
   const webcontainer = useWebContainer();
 
+  useEffect(() => {
+    console.log('[Builder] webcontainer updated', Boolean(webcontainer));
+  }, [webcontainer]);
+
   const [currentStep, setCurrentStep] = useState(1);
   const [activeTab, setActiveTab] = useState<'code' | 'preview'>('code');
   const [selectedFile, setSelectedFile] = useState<FileItem | null>(null);
