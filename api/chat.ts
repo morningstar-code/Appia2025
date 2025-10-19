@@ -126,14 +126,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const { messages } = req.body;
     
-    const response = await anthropic.messages.create({
+    // Set headers for streaming
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    
+    const stream = await anthropic.messages.stream({
       messages: messages,
       model: 'claude-3-5-haiku-20241022',
       max_tokens: 8000,
       system: getSystemPrompt()
     });
 
-    res.json({ response: (response.content[0] as any).text });
+    // Stream the response
+    for await (const chunk of stream) {
+      if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text_delta') {
+        res.write(`data: ${JSON.stringify({ text: chunk.delta.text })}\n\n`);
+      }
+    }
+
+    res.write('data: [DONE]\n\n');
+    res.end();
   } catch (error) {
     console.error('Error:', error);
     res.status(500).json({ message: 'Internal server error' });

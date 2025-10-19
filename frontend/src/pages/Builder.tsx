@@ -61,7 +61,7 @@ export function Builder() {
         const fileItem: FileItem = {
           name,
           path: fullPath,
-          type: 'file',
+                type: 'file',
           content
         };
 
@@ -95,7 +95,7 @@ export function Builder() {
 
       if (existingIndex >= 0) {
         updated[existingIndex] = folder;
-      } else {
+            } else {
         updated.push(folder);
       }
 
@@ -332,14 +332,72 @@ export function Builder() {
 
   const hasPendingSteps = steps.some((step) => step.status !== 'completed');
 
+  async function streamChat(messages: {role: string, content: string}[]) {
+    const response = await fetch(`${BACKEND_URL}/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ messages })
+    });
+
+    if (!response.body) {
+      throw new Error('No response body');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let fullResponse = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value);
+      const lines = chunk.split('\n');
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          if (data === '[DONE]') {
+            return fullResponse;
+          }
+          try {
+            const parsed = JSON.parse(data);
+            fullResponse += parsed.text;
+            
+            // Parse and update steps as they come in
+            try {
+              const newSteps = parseXml(fullResponse);
+              setSteps(s => {
+                const existingIds = new Set(s.map(step => step.id));
+                const stepsToAdd = newSteps.filter((step: Step) => !existingIds.has(step.id));
+                return [...s, ...stepsToAdd.map((x: Step) => ({
+                  ...x,
+                  status: "pending" as "pending"
+                }))];
+              });
+            } catch (e) {
+              // Partial XML, keep going
+            }
+          } catch (e) {
+            // Invalid JSON, skip
+          }
+        }
+      }
+    }
+
+    return fullResponse;
+  }
+
   async function init() {
     try {
       console.log('Calling API:', `${BACKEND_URL}/template`);
-      const response = await axios.post(`${BACKEND_URL}/template`, {
-        prompt: prompt.trim()
-      });
+    const response = await axios.post(`${BACKEND_URL}/template`, {
+      prompt: prompt.trim()
+    });
       console.log('API Response:', response.data);
-      setTemplateSet(true);
+    setTemplateSet(true);
     
     const {prompts, uiPrompts} = response.data;
 
@@ -349,26 +407,30 @@ export function Builder() {
     })));
 
     setLoading(true);
-    const stepsResponse = await axios.post(`${BACKEND_URL}/chat`, {
-      messages: [...prompts, prompt].map(content => ({
+    const fullResponse = await streamChat([...prompts, prompt].map(content => ({
         role: "user",
         content
-      }))
-    })
+    })));
 
     setLoading(false);
 
-    setSteps(s => [...s, ...parseXml(stepsResponse.data.response).map(x => ({
+    // Final parse to ensure we have all steps
+    const finalSteps = parseXml(fullResponse);
+    setSteps(s => {
+      const existingIds = new Set(s.map(step => step.id));
+      const stepsToAdd = finalSteps.filter((step: Step) => !existingIds.has(step.id));
+      return [...s, ...stepsToAdd.map((x: Step) => ({
       ...x,
       status: "pending" as "pending"
-    }))]);
+      }))];
+    });
 
     setLlmMessages([...prompts, prompt].map(content => ({
       role: "user",
       content
     })));
 
-    setLlmMessages(x => [...x, {role: "assistant", content: stepsResponse.data.response}])
+    setLlmMessages(x => [...x, {role: "assistant", content: fullResponse}])
     } catch (error) {
       console.error('API Error:', error);
       setLoading(false);
@@ -412,21 +474,24 @@ export function Builder() {
                     };
 
                     setLoading(true);
-                    const stepsResponse = await axios.post(`${BACKEND_URL}/chat`, {
-                      messages: [...llmMessages, newMessage]
-                    });
+                    const fullResponse = await streamChat([...llmMessages, newMessage]);
                     setLoading(false);
 
                     setLlmMessages(x => [...x, newMessage]);
                     setLlmMessages(x => [...x, {
                       role: "assistant",
-                      content: stepsResponse.data.response
+                      content: fullResponse
                     }]);
                     
-                    setSteps(s => [...s, ...parseXml(stepsResponse.data.response).map(x => ({
-                      ...x,
-                      status: "pending" as "pending"
-                    }))]);
+                    const finalSteps = parseXml(fullResponse);
+                    setSteps(s => {
+                      const existingIds = new Set(s.map(step => step.id));
+                      const stepsToAdd = finalSteps.filter((step: Step) => !existingIds.has(step.id));
+                      return [...s, ...stepsToAdd.map((x: Step) => ({
+                        ...x,
+                        status: "pending" as "pending"
+                      }))];
+                    });
 
                   }} className='bg-purple-400 px-4'>Send</button>
                   </div>}
