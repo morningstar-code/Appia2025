@@ -4,7 +4,8 @@ export default clerkMiddleware();
 
 export const config = {
   matcher: [
-    "/((?!.*\\..*|_next).*)",
+    "/((?!.+\\.[\\w]+$|_next).*)",
+    "/",
     "/(api|trpc)(.*)",
   ],
 };
