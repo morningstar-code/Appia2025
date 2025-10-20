@@ -1,0 +1,41 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Project {
+  id           String   @id @default(cuid())
+  userId       String
+  title        String
+  prompt       String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  creditsUsed  Int      @default(0)
+  lastRunAt    DateTime?
+  generations  Generation[]
+}
+
+model CreditLedger {
+  id        String   @id @default(cuid())
+  userId    String
+  amount    Int
+  reason    String
+  createdAt DateTime @default(now())
+}
+
+model Generation {
+  id          String   @id @default(cuid())
+  projectId   String
+  provider    String
+  model       String
+  tokens      Int      @default(0)
+  status      String   @default("pending")
+  logs        String?
+  createdAt   DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
