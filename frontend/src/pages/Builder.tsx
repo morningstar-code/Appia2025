@@ -1,26 +1,60 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, {
+  FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { StepsList } from '../components/StepsList';
-import { FileExplorer } from '../components/FileExplorer';
-import { TabView } from '../components/TabView';
-import { CodeEditor } from '../components/CodeEditor';
-import { PreviewFrame } from '../components/PreviewFrame';
-import { Terminal } from '../components/Terminal';
-import { Step, FileItem, StepType } from '../types';
 import axios from 'axios';
+import {
+  FileItem,
+  Step,
+  StepType,
+  ChatMessage,
+} from '../types';
+import { useWebContainer } from '../hooks/useWebContainer';
 import { BACKEND_URL } from '../config';
 import { parseXml } from '../steps';
-import { useWebContainer } from '../hooks/useWebContainer';
-import { Loader } from '../components/Loader';
+import { AppShellHeader } from '../components/AppShellHeader';
+import { StepsList } from '../components/StepsList';
+import { FileExplorer } from '../components/FileExplorer';
+import { CodeEditor } from '../components/CodeEditor';
+import {
+  PreviewFrame,
+  PreviewStatus,
+  PREVIEW_STATUS_LABELS,
+} from '../components/PreviewFrame';
+import { TabView } from '../components/TabView';
+import { Terminal } from '../components/Terminal';
+import { MessageCircle, Bot, User as UserIcon } from 'lucide-react';
 
-const MOCK_FILE_CONTENT = `// This is a sample file content
-import React from 'react';
+type ApiMessage = { role: 'user' | 'assistant'; content: string };
 
-function Component() {
-  return <div>Hello World</div>;
-}
+type IncomingStep = {
+  title: string;
+  description?: string;
+  type: StepType;
+  code?: string;
+  path?: string;
+};
 
-export default Component;`;
+const createChatMessage = (role: ChatMessage['role'], content: string): ChatMessage => ({
+  id: `${role}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  role,
+  content,
+  createdAt: Date.now(),
+});
+
+const sortFileNodes = (nodes: FileItem[]): FileItem[] => {
+  return [...nodes].sort((a, b) => {
+    if (a.type !== b.type) {
+      return a.type === 'folder' ? -1 : 1;
+    }
+    return a.name.localeCompare(b.name);
+  });
+};
 
 export function Builder() {
   const location = useLocation();
@@ -30,65 +64,78 @@ export function Builder() {
   const initialPrompt = routeState?.prompt ?? persistedPrompt;
 
   const [prompt, setPromptValue] = useState(initialPrompt);
-  const [userPrompt, setPrompt] = useState("");
-  const [llmMessages, setLlmMessages] = useState<{role: "user" | "assistant", content: string;}[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [templateSet, setTemplateSet] = useState(false);
-
-  const [currentStep, setCurrentStep] = useState(1);
-  const [activeTab, setActiveTab] = useState<'code' | 'preview'>('code');
-  const [selectedFile, setSelectedFile] = useState<FileItem | null>(null);
-  
+  const [chatInput, setChatInput] = useState('');
   const [steps, setSteps] = useState<Step[]>([]);
   const [files, setFiles] = useState<FileItem[]>([]);
-  const [processingStep, setProcessingStep] = useState(false);
-  const [workspaceMounted, setWorkspaceMounted] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<FileItem | null>(null);
+  const [activeTab, setActiveTab] = useState<'code' | 'preview'>('code');
+  const [currentStep, setCurrentStep] = useState<number | null>(null);
   const [terminalLogs, setTerminalLogs] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [templateSet, setTemplateSet] = useState(false);
+  const [conversation, setConversation] = useState<ChatMessage[]>([]);
+  const [llmMessages, setLlmMessages] = useState<ApiMessage[]>([]);
+  const [previewStatus, setPreviewStatus] = useState<PreviewStatus>('idle');
+  const [autoOpenPreview, setAutoOpenPreview] = useState(true);
+  const [workspaceMounted, setWorkspaceMounted] = useState(false);
+
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const cwdRef = useRef<string>('');
+  const processedActionKeysRef = useRef<Set<string>>(new Set());
+  const artifactStepAddedRef = useRef(false);
   const waitingForWebContainerLogged = useRef(false);
-  const webcontainerStatusRef = useRef<'booting' | 'ready' | 'error' | null>(null);
   const hasInitializedRef = useRef(false);
+  const runningScriptRef = useRef(false);
+  const webcontainerStatusRef = useRef<'booting' | 'ready' | 'error' | null>(null);
+
+  const {
+    instance: webcontainer,
+    error: webcontainerError,
+    isBooting: webcontainerBooting,
+  } = useWebContainer();
+
+  const hasPendingSteps = useMemo(
+    () => steps.some((step) => step.status !== 'completed'),
+    [steps],
+  );
+
+  const headerStatusLabel = useMemo(() => {
+    if (webcontainerError) {
+      return 'WebContainer error';
+    }
+    if (!templateSet || loading) {
+      return 'Generating workspace';
+    }
+    if (hasPendingSteps) {
+      return 'Building project';
+    }
+    return 'Ready';
+  }, [webcontainerError, templateSet, loading, hasPendingSteps]);
+
+  const headerStatusTone: 'neutral' | 'active' | 'success' | 'warning' | 'error' = useMemo(() => {
+    if (webcontainerError) {
+      return 'error';
+    }
+    if (!templateSet || loading || hasPendingSteps) {
+      return 'active';
+    }
+    return 'success';
+  }, [webcontainerError, templateSet, loading, hasPendingSteps]);
 
   const addLog = useCallback((message: string) => {
-    setTerminalLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${message}`]);
+    setTerminalLogs((prev) => [
+      ...prev,
+      `[${new Date().toLocaleTimeString()}] ${message}`,
+    ]);
   }, []);
 
-  const { instance: webcontainer, error: webcontainerError, isBooting: webcontainerBooting } = useWebContainer();
-
-  useEffect(() => {
-    if (!initialPrompt) {
-      navigate('/', { replace: true });
-    } else {
-      sessionStorage.setItem('builderPrompt', initialPrompt);
-      setPromptValue(initialPrompt);
-    }
-  }, [initialPrompt, navigate]);
-
-  useEffect(() => {
-    let status: 'booting' | 'ready' | 'error';
-    if (webcontainer) {
-      status = 'ready';
-    } else if (webcontainerError) {
-      status = 'error';
-    } else {
-      status = 'booting';
-    }
-
-    if (webcontainerStatusRef.current === status) {
+  const ensureCurrentStep = useCallback((nextSteps: Step[]) => {
+    if (!nextSteps.length) {
+      setCurrentStep(null);
       return;
     }
-
-    webcontainerStatusRef.current = status;
-
-    if (status === 'booting') {
-      addLog('⏳ WebContainer is booting...');
-    } else if (status === 'ready') {
-      addLog('✓ WebContainer booted and ready');
-      waitingForWebContainerLogged.current = false;
-    } else if (status === 'error') {
-      addLog(`✗ WebContainer failed to boot: ${webcontainerError instanceof Error ? webcontainerError.message : 'Unknown error'}`);
-    }
-  }, [webcontainer, webcontainerBooting, webcontainerError, addLog]);
+    setCurrentStep((existing) => existing ?? nextSteps[0].id);
+  }, []);
 
   const upsertFile = useCallback((tree: FileItem[], path: string, content: string): FileItem[] => {
     if (!path) {
@@ -100,74 +147,149 @@ export function Builder() {
     const insert = (nodes: FileItem[], index: number, currentPath: string): FileItem[] => {
       const name = segments[index];
       const fullPath = currentPath ? `${currentPath}/${name}` : name;
-      let updated = [...nodes];
-      const existingIndex = updated.findIndex((item) => item.path === fullPath);
+      const existingIndex = nodes.findIndex((item) => item.path === fullPath);
+      let nextNodes = [...nodes];
 
       if (index === segments.length - 1) {
         const fileItem: FileItem = {
           name,
           path: fullPath,
-                type: 'file',
-          content
+          type: 'file',
+          content,
         };
 
         if (existingIndex >= 0) {
-          updated[existingIndex] = {
-            ...updated[existingIndex],
-            ...fileItem
+          nextNodes[existingIndex] = {
+            ...nextNodes[existingIndex],
+            ...fileItem,
           };
         } else {
-          updated.push(fileItem);
+          nextNodes.push(fileItem);
         }
-        return updated;
+        return sortFileNodes(nextNodes);
       }
 
       let folder: FileItem;
-      if (existingIndex >= 0 && updated[existingIndex].type === 'folder') {
+      if (existingIndex >= 0 && nextNodes[existingIndex].type === 'folder') {
         folder = {
-          ...updated[existingIndex],
-          children: updated[existingIndex].children ? [...updated[existingIndex].children!] : []
+          ...nextNodes[existingIndex],
+          children: nextNodes[existingIndex].children
+            ? [...nextNodes[existingIndex].children!]
+            : [],
         };
       } else {
         folder = {
           name,
           path: fullPath,
           type: 'folder',
-          children: []
+          children: [],
         };
       }
 
       folder.children = insert(folder.children || [], index + 1, fullPath);
 
       if (existingIndex >= 0) {
-        updated[existingIndex] = folder;
-            } else {
-        updated.push(folder);
+        nextNodes[existingIndex] = folder;
+      } else {
+        nextNodes.push(folder);
       }
 
-      return updated;
+      return sortFileNodes(nextNodes);
     };
 
     return insert(tree, 0, '');
   }, []);
 
-  const findNextPendingStep = useCallback(
-    () => steps.findIndex((step) => step.status === 'pending'),
-    [steps]
+  const writeFileToWebContainer = useCallback(
+    async (path: string, contents: string) => {
+      if (!webcontainer) {
+        return;
+      }
+
+      const segments = path.split('/').filter(Boolean);
+      if (segments.length > 1) {
+        const directory = segments.slice(0, -1).join('/');
+        try {
+          await webcontainer.fs.mkdir(directory, { recursive: true });
+        } catch {
+          /* directory exists */
+        }
+      }
+
+      await webcontainer.fs.writeFile(path, contents);
+    },
+    [webcontainer],
   );
 
-  const markStepStatus = useCallback((index: number, status: Step['status']) => {
-    setSteps((prev) =>
-      prev.map((step, idx) =>
-        idx === index
-          ? {
-              ...step,
-              status
-            }
-          : step
-      )
-    );
-  }, []);
+  const ensurePackageJson = useCallback(
+    async (cwd: string) => {
+      if (!webcontainer) {
+        return;
+      }
+
+      const packagePath = cwd === '.' ? 'package.json' : `${cwd}/package.json`;
+      try {
+        await webcontainer.fs.readFile(packagePath, 'utf-8');
+        return;
+      } catch {
+        /* fall through */
+      }
+
+      const defaultPackageJson = {
+        name: 'appia-project',
+        private: true,
+        version: '0.0.0',
+        type: 'module',
+        scripts: {
+          dev: 'vite',
+          build: 'vite build',
+          preview: 'vite preview',
+        },
+      };
+
+      await writeFileToWebContainer(
+        packagePath,
+        JSON.stringify(defaultPackageJson, null, 2),
+      );
+      addLog(`Created default package.json at ${packagePath}`);
+    },
+    [webcontainer, writeFileToWebContainer, addLog],
+  );
+
+  const addFileStepResult = useCallback(
+    async (step: Step) => {
+      if (!step.path) {
+        return;
+      }
+
+      const relativePath = step.path.replace(/^\.\//, '');
+      const cwd = cwdRef.current;
+      const resolvedPath = cwd ? `${cwd.replace(/\/$/, '')}/${relativePath}` : relativePath;
+      const normalizedPath = resolvedPath.replace(/^\/+/, '');
+
+      const content = step.code || '';
+      setFiles((prev) => upsertFile(prev, normalizedPath, content));
+      addLog(`Creating file: ${normalizedPath}`);
+
+      setSelectedFile((prev) => {
+        if (prev) {
+          return prev;
+        }
+        return {
+          name: normalizedPath.split('/').pop() ?? normalizedPath,
+          path: normalizedPath,
+          type: 'file',
+          content,
+        };
+      });
+
+      if (webcontainer && workspaceMounted) {
+        await writeFileToWebContainer(normalizedPath, content);
+        addLog(`✓ File created: ${normalizedPath}`);
+      }
+    },
+    [addLog, upsertFile, webcontainer, workspaceMounted, writeFileToWebContainer],
+  );
 
   const runShellCommands = useCallback(
     async (commandBlock: string) => {
@@ -181,7 +303,7 @@ export function Builder() {
         .flatMap((line) => line.split('&&'))
         .map((line) => line.trim())
         .filter(Boolean);
-      
+
       addLog(`Running ${commands.length} command(s)`);
 
       let cwdSegments: string[] = cwdRef.current
@@ -216,31 +338,35 @@ export function Builder() {
         const process = await webcontainer.spawn(
           program,
           args,
-          cwd === '.' ? undefined : { cwd }
+          cwd === '.' ? undefined : { cwd },
         );
 
         const decoder = new TextDecoder();
         let writer: WritableStreamDefaultWriter<string> | null = null;
 
         process.output
-          .pipeTo(new WritableStream({
-            async write(data) {
-              const raw = decoder.decode(data);
-              const text = raw.replace(/\x1B\[[0-9;]*m/g, '').trim();
-              if (text) {
-                addLog(text);
-              }
-
-              if (/ok to proceed\?/i.test(raw) || /\(y\/n\)/i.test(raw) || /\(y\/N\)/i.test(raw)) {
-                addLog('↩ Auto-confirming prompt with "y"');
-                if (!writer) {
-                  writer = process.input.getWriter();
+          .pipeTo(
+            new WritableStream({
+              async write(data) {
+                const raw = decoder.decode(data);
+                const text = raw.replace(/\x1B\[[0-9;]*m/g, '').trim();
+                if (text) {
+                  addLog(text);
                 }
-                await writer.write('y\n');
-              }
-            }
-          }))
-          .catch(() => {/* ignore stream errors */});
+
+                if (/ok to proceed\?/i.test(raw) || /\(y\/n\)/i.test(raw) || /\(y\/N\)/i.test(raw)) {
+                  addLog('↩ Auto-confirming prompt with "y"');
+                  if (!writer) {
+                    writer = process.input.getWriter();
+                  }
+                  await writer.write('y\n');
+                }
+              },
+            }),
+          )
+          .catch(() => {
+            /* ignore stream errors */
+          });
 
         const exitCode = await process.exit;
         if (writer) {
@@ -257,13 +383,11 @@ export function Builder() {
       for (const command of commands) {
         if (command.startsWith('cd ')) {
           const target = command.replace(/^cd\s+/, '').trim();
-          console.log('[Builder] processing cd', target);
           changeDirectory(target);
           continue;
         }
 
         if (command.startsWith('npm run dev')) {
-          // PreviewFrame will start the dev server, so skip running it here.
           continue;
         }
 
@@ -297,11 +421,9 @@ export function Builder() {
           }
         }
 
-        console.log('[Builder] spawning command', program, args);
         await execute(program, args);
-        console.log('[Builder] command completed', program, args);
 
-        if (command.startsWith('npm init') || command.startsWith('npm install') || command.startsWith('npm create')) {
+        if (/^npm\s+(init|install|create)/.test(command)) {
           const cwd = getCwd();
           const packagePathRaw = cwd === '.' ? 'package.json' : `${cwd}/package.json`;
           const packagePath = packagePathRaw.replace(/^\.\//, '');
@@ -317,161 +439,347 @@ export function Builder() {
             const packageLock = await webcontainer.fs.readFile(lockPath, 'utf-8');
             setFiles((prev) => upsertFile(prev, lockPath, packageLock));
           } catch {
-            // Ignore missing package-lock
+            /* ignore missing lock file */
           }
         }
       }
 
       const finalCwd = getCwd();
       cwdRef.current = finalCwd === '.' ? '' : finalCwd;
-      console.log('[Builder] updated cwd', cwdRef.current);
     },
-    [webcontainer, upsertFile, addLog]
+    [webcontainer, addLog, ensurePackageJson, upsertFile],
   );
 
-  const writeFileToWebContainer = useCallback(
-    async (path: string, contents: string) => {
-      if (!webcontainer) {
+  const appendSteps = useCallback(
+    (incoming: IncomingStep[]) => {
+      if (!incoming.length) {
         return;
       }
 
-      const segments = path.split('/').filter(Boolean);
-      if (segments.length > 1) {
-        const directory = segments.slice(0, -1).join('/');
-        try {
-          await webcontainer.fs.mkdir(directory, { recursive: true });
-        } catch {
-          // directory already exists
-        }
-      }
+      setSteps((prev) => {
+        const existingKeys = new Set(
+          prev.map((step) => `${step.type}|${step.title}|${step.path ?? ''}`),
+        );
 
-      await webcontainer.fs.writeFile(path, contents);
+        let nextId = prev.length ? prev[prev.length - 1].id + 1 : 1;
+        const additions: Step[] = [];
+
+        for (const entry of incoming) {
+          const key = `${entry.type}|${entry.title}|${entry.path ?? ''}`;
+          if (existingKeys.has(key)) {
+            continue;
+          }
+          additions.push({
+            id: nextId++,
+            title: entry.title,
+            description: entry.description ?? '',
+            type: entry.type,
+            status: 'pending',
+            code: entry.code,
+            path: entry.path,
+          });
+          existingKeys.add(key);
+        }
+
+        if (!additions.length) {
+          return prev;
+        }
+
+        const nextSteps = [...prev, ...additions];
+        ensureCurrentStep(nextSteps);
+        return nextSteps;
+      });
     },
-    [webcontainer]
+    [ensureCurrentStep],
   );
 
-  const ensurePackageJson = useCallback(async (cwd: string) => {
-    if (!webcontainer) {
-      return;
-    }
-
-    const packagePath = cwd === '.' ? 'package.json' : `${cwd}/package.json`;
-    try {
-      await webcontainer.fs.readFile(packagePath, 'utf-8');
-      return;
-    } catch {
-      // create default package.json
-    }
-
-    const defaultPackageJson = {
-      name: 'appia-project',
-      private: true,
-      version: '0.0.0',
-      type: 'module',
-      scripts: {
-        dev: 'vite',
-        build: 'vite build',
-        preview: 'vite preview'
-      }
-    };
-
-    await writeFileToWebContainer(packagePath, JSON.stringify(defaultPackageJson, null, 2));
-    addLog(`Created default package.json at ${packagePath}`);
-  }, [webcontainer, writeFileToWebContainer, addLog]);
-
-  const appendSteps = useCallback((rawSteps: Step[]) => {
-    if (!rawSteps.length) {
-      return;
-    }
-
-    setSteps(prev => {
-      const existingKeys = new Set(
-        prev.map(step => `${step.type}|${step.title}|${step.path ?? ''}`)
-      );
-
-      let nextId = prev.length ? prev[prev.length - 1].id + 1 : 1;
-      const stepsToAdd = rawSteps
-        .filter(step => !existingKeys.has(`${step.type}|${step.title}|${step.path ?? ''}`))
-        .map(step => ({
-          ...step,
-          id: nextId++,
-          status: 'pending' as const
-        }));
-
-      if (!stepsToAdd.length) {
-        return prev;
-      }
-
-      return [...prev, ...stepsToAdd];
-    });
+  const markStepStatus = useCallback((index: number, status: Step['status']) => {
+    setSteps((prev) =>
+      prev.map((step, idx) =>
+        idx === index
+          ? {
+              ...step,
+              status,
+            }
+          : step,
+      ),
+    );
   }, []);
 
-  useEffect(() => {
-    if (processingStep) {
-      return;
-    }
-
-    const nextIndex = findNextPendingStep();
-    if (nextIndex === -1) {
-      return;
-    }
-
-    const nextStep = steps[nextIndex];
-
-    if ((nextStep.type === StepType.RunScript || nextStep.type === StepType.CreateFile) && (!workspaceMounted || webcontainerError)) {
-      if (!waitingForWebContainerLogged.current) {
-        addLog(`⏳ Waiting for WebContainer to be ready before executing steps...`);
-        waitingForWebContainerLogged.current = true;
-      }
-      return;
-    }
-
-    setProcessingStep(true);
-    markStepStatus(nextIndex, 'in-progress');
-
-    (async () => {
-      try {
-        console.log('[Builder] processing step', nextStep.id, StepType[nextStep.type], nextStep.path);
-        if (nextStep.type === StepType.CreateFolder) {
-          if (nextStep.path) {
-            addLog(`Creating folder: ${nextStep.path}`);
-          } else {
-            addLog(`Step: ${nextStep.title || 'Artifact created'}`);
-          }
-          markStepStatus(nextIndex, 'completed');
-        } else if (nextStep.type === StepType.CreateFile && nextStep.path) {
-          const relativePath = nextStep.path.replace(/^\.\//, '');
-          const currentDir = cwdRef.current;
-          const resolvedPath = currentDir
-            ? `${currentDir.replace(/\/$/, '')}/${relativePath}`
-            : relativePath;
-          const normalizedPath = resolvedPath.replace(/^\/+/, '');
-
-          addLog(`Creating file: ${normalizedPath}`);
-          const content = nextStep.code || '';
-          setFiles((prev) => upsertFile(prev, normalizedPath, content));
-          if (webcontainer && workspaceMounted) {
-            console.log('[Builder] writing file to WebContainer', normalizedPath);
-            await writeFileToWebContainer(normalizedPath, content);
-            addLog(`✓ File created: ${normalizedPath}`);
-          }
-          markStepStatus(nextIndex, 'completed');
-        } else if (nextStep.type === StepType.RunScript && nextStep.code) {
-          console.log('[Builder] executing run script step', nextStep.code);
-          await runShellCommands(nextStep.code);
-          markStepStatus(nextIndex, 'completed');
-        } else {
-          markStepStatus(nextIndex, 'completed');
+  const handleStreamBuffer = useCallback(
+    (buffer: string) => {
+      if (!artifactStepAddedRef.current) {
+        const titleMatch = buffer.match(/<boltArtifact[^>]*title="([^"]*)"/);
+        if (titleMatch) {
+          artifactStepAddedRef.current = true;
+          appendSteps([
+            {
+              title: titleMatch[1] || 'Project Files',
+              description: '',
+              type: StepType.CreateFolder,
+            },
+          ]);
         }
-      } catch (error) {
-        console.error('Failed to process step:', error);
-        addLog(`ERROR: ${error instanceof Error ? error.message : 'Unknown error'}`);
-        markStepStatus(nextIndex, 'completed');
-      } finally {
-        setProcessingStep(false);
       }
-    })();
-  }, [steps, processingStep, findNextPendingStep, markStepStatus, runShellCommands, upsertFile, webcontainer, workspaceMounted, writeFileToWebContainer, addLog, webcontainerError]);
+
+      const actionRegex = /<boltAction\s+type="([^"]*)"(?:\s+filePath="([^"]*)")?>([\s\S]*?)<\/boltAction>/g;
+      const newSteps: IncomingStep[] = [];
+      let match;
+      while ((match = actionRegex.exec(buffer)) !== null) {
+        const [, type, filePath = '', rawContent] = match;
+        const key = `${match.index}-${type}-${filePath}`;
+        if (processedActionKeysRef.current.has(key)) {
+          continue;
+        }
+        processedActionKeysRef.current.add(key);
+
+        if (type === 'file') {
+          newSteps.push({
+            title: `Create ${filePath || 'file'}`,
+            description: '',
+            type: StepType.CreateFile,
+            code: rawContent.trim(),
+            path: filePath,
+          });
+        } else if (type === 'shell') {
+          newSteps.push({
+            title: 'Run command',
+            description: '',
+            type: StepType.RunScript,
+            code: rawContent.trim(),
+          });
+        }
+      }
+
+      if (newSteps.length) {
+        appendSteps(newSteps);
+      }
+    },
+    [appendSteps],
+  );
+
+  const streamChat = useCallback(
+    async (messages: ApiMessage[]) => {
+      const response = await fetch(`${BACKEND_URL}/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ messages }),
+      });
+
+      const contentType = response.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        const data = await response.json();
+        const text = data.response ?? '';
+        handleStreamBuffer(text);
+        const finalSteps = parseXml(text).map((step) => ({
+          title: step.title,
+          description: step.description,
+          type: step.type,
+          code: step.code,
+          path: step.path,
+        }));
+        appendSteps(finalSteps);
+        return text;
+      }
+
+      if (!response.body) {
+        throw new Error('No response body');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let fullResponse = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) {
+            continue;
+          }
+          const data = line.slice(6).trim();
+          if (!data || data === '[DONE]') {
+            continue;
+          }
+
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.text) {
+              fullResponse += parsed.text;
+              handleStreamBuffer(fullResponse);
+            }
+          } catch {
+            /* ignore malformed chunk */
+          }
+        }
+      }
+
+      const finalSteps = parseXml(fullResponse).map((step) => ({
+        title: step.title,
+        description: step.description,
+        type: step.type,
+        code: step.code,
+        path: step.path,
+      }));
+      appendSteps(finalSteps);
+
+      return fullResponse;
+    },
+    [appendSteps, handleStreamBuffer],
+  );
+
+  const resetStreamingState = useCallback(() => {
+    processedActionKeysRef.current.clear();
+    artifactStepAddedRef.current = false;
+  }, []);
+
+  const initialiseWorkspace = useCallback(async () => {
+    if (!prompt.trim()) {
+      return;
+    }
+
+    try {
+      resetStreamingState();
+      addLog('Initializing builder...');
+      const { data } = await axios.post(`${BACKEND_URL}/template`, {
+        prompt: prompt.trim(),
+      });
+
+      setTemplateSet(true);
+      const prompts: string[] = data.prompts ?? [];
+      const initialMessages: ApiMessage[] = [
+        ...prompts.map((content) => ({ role: 'user' as const, content })),
+        { role: 'user', content: prompt.trim() },
+      ];
+
+      setLlmMessages(initialMessages);
+      addLog('Template set, generating build plan...');
+      setLoading(true);
+
+      const fullResponse = await streamChat(initialMessages);
+
+      const assistantMessage: ApiMessage = { role: 'assistant', content: fullResponse };
+      setLlmMessages([...initialMessages, assistantMessage]);
+      setConversation([
+        createChatMessage('user', prompt.trim()),
+        createChatMessage('assistant', fullResponse),
+      ]);
+      addLog('AI response received');
+    } catch (error) {
+      console.error('API Error:', error);
+      addLog('ERROR: Failed to initialize builder');
+    } finally {
+      setLoading(false);
+    }
+  }, [prompt, resetStreamingState, addLog, streamChat]);
+
+  const handleSendMessage = useCallback(
+    async (event?: FormEvent) => {
+      event?.preventDefault();
+      const trimmed = chatInput.trim();
+      if (!trimmed) {
+        return;
+      }
+
+      resetStreamingState();
+      const userMessage: ApiMessage = { role: 'user', content: trimmed };
+      const uiMessage = createChatMessage('user', trimmed);
+      setConversation((prev) => [...prev, uiMessage]);
+      setChatInput('');
+
+      const requestMessages = [...llmMessages, userMessage];
+      setLlmMessages(requestMessages);
+      setLoading(true);
+
+      try {
+        const fullResponse = await streamChat(requestMessages);
+        const assistantMessage: ApiMessage = { role: 'assistant', content: fullResponse };
+        setLlmMessages((prev) => [...prev, assistantMessage]);
+        setConversation((prev) => [
+          ...prev,
+          createChatMessage('assistant', fullResponse),
+        ]);
+      } catch (error) {
+        console.error('Chat error:', error);
+        addLog('ERROR: Failed to stream chat message');
+      } finally {
+        setLoading(false);
+      }
+    },
+    [chatInput, llmMessages, streamChat, resetStreamingState, addLog],
+  );
+
+  const handleRunAgain = useCallback(() => {
+    setSteps([]);
+    setFiles([]);
+    setSelectedFile(null);
+    setConversation([]);
+    setLlmMessages([]);
+    setTerminalLogs([]);
+    setCurrentStep(null);
+    setTemplateSet(false);
+    setChatInput('');
+    setPreviewStatus('idle');
+    processedActionKeysRef.current.clear();
+    artifactStepAddedRef.current = false;
+    initialiseWorkspace();
+  }, [initialiseWorkspace]);
+
+  useEffect(() => {
+    if (!initialPrompt) {
+      navigate('/', { replace: true });
+    } else {
+      sessionStorage.setItem('builderPrompt', initialPrompt);
+      setPromptValue(initialPrompt);
+    }
+  }, [initialPrompt, navigate]);
+
+  useEffect(() => {
+    let status: 'booting' | 'ready' | 'error';
+    if (webcontainer) {
+      status = 'ready';
+    } else if (webcontainerError) {
+      status = 'error';
+    } else {
+      status = 'booting';
+    }
+
+    if (webcontainerStatusRef.current === status) {
+      return;
+    }
+
+    webcontainerStatusRef.current = status;
+
+    if (status === 'booting') {
+      addLog('⏳ WebContainer is booting...');
+    } else if (status === 'ready') {
+      addLog('✓ WebContainer booted and ready');
+    } else if (status === 'error') {
+      addLog(
+        `✗ WebContainer failed to boot: ${
+          webcontainerError instanceof Error
+            ? webcontainerError.message
+            : 'Unknown error'
+        }`,
+      );
+    }
+  }, [webcontainer, webcontainerError, addLog]);
+
+  useEffect(() => {
+    if (!prompt.trim() || hasInitializedRef.current) {
+      return;
+    }
+    hasInitializedRef.current = true;
+    initialiseWorkspace();
+  }, [prompt, initialiseWorkspace]);
 
   useEffect(() => {
     if (!webcontainer || webcontainerError) {
@@ -486,14 +794,16 @@ export function Builder() {
 
     (async () => {
       try {
-        console.log('[Builder] mounting empty workspace');
         await webcontainer.mount({});
-        console.log('[Builder] workspace mounted');
         addLog('✓ WebContainer workspace mounted and ready!');
         setWorkspaceMounted(true);
       } catch (error) {
         console.error('[Builder] Failed to initialize WebContainer workspace:', error);
-        addLog(`ERROR: Failed to mount workspace - ${error instanceof Error ? error.message : 'Unknown error'}`);
+        addLog(
+          `ERROR: Failed to mount workspace - ${
+            error instanceof Error ? error.message : 'Unknown error'
+          }`,
+        );
       }
     })();
   }, [webcontainer, workspaceMounted, addLog, webcontainerError]);
@@ -507,200 +817,219 @@ export function Builder() {
   useEffect(() => {
     if (webcontainerError) {
       waitingForWebContainerLogged.current = false;
-      setProcessingStep(false);
     }
   }, [webcontainerError]);
 
   useEffect(() => {
-    console.log('[Builder] steps state', steps.map((step) => ({
-      id: step.id,
-      type: StepType[step.type],
-      status: step.status,
-      path: step.path
-    })));
-  }, [steps]);
-
-  const hasPendingSteps = steps.some((step) => step.status !== 'completed');
-
-  async function streamChat(messages: {role: string, content: string}[]) {
-    const response = await fetch(`${BACKEND_URL}/chat`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ messages })
-    });
-
-    if (!response.body) {
-      throw new Error('No response body');
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let fullResponse = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      const chunk = decoder.decode(value);
-      const lines = chunk.split('\n');
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6);
-          if (data === '[DONE]') {
-            return fullResponse;
-          }
-          try {
-            const parsed = JSON.parse(data);
-            fullResponse += parsed.text;
-            
-            // Parse and update steps as they come in
-            try {
-              const newSteps = parseXml(fullResponse);
-              appendSteps(newSteps);
-            } catch (e) {
-              // Partial XML, keep going
-            }
-          } catch (e) {
-            // Invalid JSON, skip
-          }
-        }
+    steps.forEach((step, index) => {
+      if (step.status !== 'pending') {
+        return;
       }
-    }
 
-    return fullResponse;
-  }
+      if (step.type === StepType.CreateFolder) {
+        markStepStatus(index, 'completed');
+        return;
+      }
 
-  async function init() {
-    try {
-      addLog('Initializing builder...');
-      console.log('Calling API:', `${BACKEND_URL}/template`);
-      const response = await axios.post(`${BACKEND_URL}/template`, {
-        prompt: prompt.trim()
-      });
-      console.log('API Response:', response.data);
-      setTemplateSet(true);
-    
-    const {prompts, uiPrompts} = response.data;
-
-    // Don't parse uiPrompts as they're just system prompts, not XML
-    // Steps will come from the chat response
-    addLog('Template set, waiting for AI to generate steps...');
-
-    setLoading(true);
-    addLog('Requesting AI to generate code...');
-    const fullResponse = await streamChat([...prompts, prompt].map(content => ({
-      role: "user",
-      content
-    })));
-
-    setLoading(false);
-    addLog('AI response received');
-
-    // Final parse to ensure we have all steps
-    const finalSteps = parseXml(fullResponse);
-    appendSteps(finalSteps);
-
-    setLlmMessages([...prompts, prompt].map(content => ({
-      role: "user",
-      content
-    })));
-
-    setLlmMessages(x => [...x, {role: "assistant", content: fullResponse}])
-    } catch (error) {
-      console.error('API Error:', error);
-      setLoading(false);
-    }
-  }
+      if (step.type === StepType.CreateFile) {
+        markStepStatus(index, 'in-progress');
+        (async () => {
+          try {
+            await addFileStepResult(step);
+            markStepStatus(index, 'completed');
+          } catch (error) {
+            console.error('Failed to process file step:', error);
+            addLog(
+              `ERROR: Failed to create ${step.path ?? 'file'} - ${
+                error instanceof Error ? error.message : 'Unknown error'
+              }`,
+            );
+            markStepStatus(index, 'completed');
+          }
+        })();
+      }
+    });
+  }, [steps, markStepStatus, addFileStepResult, addLog]);
 
   useEffect(() => {
-    if (hasInitializedRef.current) {
+    if (runningScriptRef.current) {
       return;
     }
-    if (!prompt.trim()) {
+
+    const nextIndex = steps.findIndex(
+      (step) => step.type === StepType.RunScript && step.status === 'pending',
+    );
+    if (nextIndex === -1) {
       return;
     }
-    hasInitializedRef.current = true;
-    init();
-  }, [prompt]);
+
+    const step = steps[nextIndex];
+    if (!workspaceMounted || webcontainerError) {
+      if (!waitingForWebContainerLogged.current) {
+        addLog('⏳ Waiting for WebContainer before executing shell commands...');
+        waitingForWebContainerLogged.current = true;
+      }
+      return;
+    }
+
+    waitingForWebContainerLogged.current = false;
+    runningScriptRef.current = true;
+    markStepStatus(nextIndex, 'in-progress');
+
+    (async () => {
+      try {
+        await runShellCommands(step.code ?? '');
+        markStepStatus(nextIndex, 'completed');
+      } catch (error) {
+        console.error('Failed to process run script step:', error);
+        addLog(
+          `ERROR: ${(error as Error)?.message ?? 'Command execution failed'}`,
+        );
+        markStepStatus(nextIndex, 'completed');
+      } finally {
+        runningScriptRef.current = false;
+      }
+    })();
+  }, [steps, workspaceMounted, webcontainerError, runShellCommands, markStepStatus, addLog]);
+
+  useEffect(() => {
+    if (autoOpenPreview && previewStatus === 'ready') {
+      setActiveTab('preview');
+    }
+  }, [autoOpenPreview, previewStatus]);
+
+  useEffect(() => {
+    if (!chatScrollRef.current) {
+      return;
+    }
+    chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+  }, [conversation]);
 
   return (
-    <div className="min-h-screen bg-gray-900 flex flex-col">
-      <header className="bg-gray-800 border-b border-gray-700 px-6 py-4">
-        <h1 className="text-xl font-semibold text-gray-100">Website Builder</h1>
-        <p className="text-sm text-gray-400 mt-1">Prompt: {prompt}</p>
-      </header>
-      
-      <div className="flex-1 overflow-hidden">
-        <div className="h-full grid grid-cols-4 gap-6 p-6">
-          <div className="col-span-1 space-y-4 overflow-auto">
-            <div>
-              <div className="max-h-[40vh] overflow-scroll">
-                <StepsList
-                  steps={steps}
-                  currentStep={currentStep}
-                  onStepClick={setCurrentStep}
-                />
+    <div className="flex min-h-screen flex-col bg-appia-background">
+      <AppShellHeader
+        prompt={prompt}
+        statusLabel={headerStatusLabel}
+        statusTone={headerStatusTone}
+        onRunAgain={handleRunAgain}
+        busy={loading || hasPendingSteps || webcontainerBooting}
+      />
+      <div className="mx-auto flex w-full max-w-[1650px] flex-1 gap-6 px-6 py-6">
+        <div className="flex w-[360px] flex-col gap-4">
+          <StepsList
+            steps={steps}
+            currentStep={currentStep}
+            onStepClick={setCurrentStep}
+          />
+          <div className="relative flex h-full flex-col overflow-hidden rounded-3xl border border-appia-border/80 bg-appia-surface/90 shadow-appia-card">
+            <header className="flex items-center justify-between border-b border-appia-border/70 px-4 py-3">
+              <div className="flex items-center gap-2 text-sm font-medium text-appia-foreground/90">
+                <MessageCircle className="h-4 w-4 text-appia-accent" />
+                Conversation
               </div>
-            </div>
-            <div className="h-[30vh]">
-              <Terminal logs={terminalLogs} />
-            </div>
-            <div>
-              <div className='flex'>
-                {(loading || !templateSet || hasPendingSteps) && <Loader />}
-                {!(loading || !templateSet || hasPendingSteps) && <div className='flex w-full'>
-                  <textarea value={userPrompt} onChange={(e) => {
-                  setPrompt(e.target.value)
-                }} className='p-2 w-full'></textarea>
-                <button onClick={async () => {
-                    const newMessage = {
-                      role: "user" as "user",
-                      content: userPrompt
-                    };
-
-                    setLoading(true);
-                    const fullResponse = await streamChat([...llmMessages, newMessage]);
-                    setLoading(false);
-
-                    setLlmMessages(x => [...x, newMessage]);
-                    setLlmMessages(x => [...x, {
-                      role: "assistant",
-                      content: fullResponse
-                    }]);
-                    
-                    const finalSteps = parseXml(fullResponse);
-                    setSteps(s => {
-                      const existingIds = new Set(s.map(step => step.id));
-                      const stepsToAdd = finalSteps.filter((step: Step) => !existingIds.has(step.id));
-                      return [...s, ...stepsToAdd.map((x: Step) => ({
-                        ...x,
-                        status: "pending" as "pending"
-                      }))];
-                    });
-
-                  }} className='bg-purple-400 px-4'>Send</button>
-                </div>}
-              </div>
-            </div>
-          </div>
-          <div className="col-span-1">
-              <FileExplorer 
-                files={files} 
-                onFileSelect={setSelectedFile}
-              />
-            </div>
-          <div className="col-span-2 bg-gray-900 rounded-lg shadow-lg p-4 h-[calc(100vh-8rem)]">
-            <TabView activeTab={activeTab} onTabChange={setActiveTab} />
-            <div className="h-[calc(100%-4rem)]">
-              {activeTab === 'code' ? (
-                <CodeEditor file={selectedFile} />
+              {loading && (
+                <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-appia-border/60 bg-appia-surface">
+                  <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-appia-accent border-t-transparent" />
+                </span>
+              )}
+            </header>
+            <div ref={chatScrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+              {conversation.length === 0 ? (
+                <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-appia-muted">
+                  <MessageCircle className="h-6 w-6 text-appia-accent" />
+                  <span>Waiting for Appia to generate your workspace…</span>
+                </div>
               ) : (
-                <PreviewFrame webContainer={webcontainer} files={files} isReady={!hasPendingSteps} />
+                conversation.map((message) => (
+                  <div
+                    key={message.id}
+                    className={`flex ${
+                      message.role === 'user' ? 'justify-end' : 'justify-start'
+                    }`}
+                  >
+                    <div
+                      className={`relative max-w-[85%] rounded-3xl border px-4 py-3 text-sm shadow-appia-card ${
+                        message.role === 'user'
+                          ? 'border-appia-accent/40 bg-appia-accent-soft text-appia-foreground shadow-appia-glow'
+                          : 'border-appia-border/70 bg-appia-surface text-appia-foreground/85'
+                      }`}
+                    >
+                      <div className="mb-2 flex items-center gap-2 text-xs uppercase tracking-wide text-appia-muted">
+                        {message.role === 'user' ? (
+                          <UserIcon className="h-3.5 w-3.5 text-appia-muted" />
+                        ) : (
+                          <Bot className="h-3.5 w-3.5 text-appia-accent" />
+                        )}
+                        {message.role === 'user' ? 'You' : 'Appia' }
+                      </div>
+                      <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
+                    </div>
+                  </div>
+                ))
               )}
             </div>
+            <form
+              onSubmit={handleSendMessage}
+              className="sticky bottom-4 mx-4 mb-4 rounded-3xl border border-appia-border/80 bg-appia-surface/95 p-3 shadow-appia-card"
+            >
+              <textarea
+                value={chatInput}
+                onChange={(event) => setChatInput(event.target.value)}
+                placeholder="Send Appia a follow-up instruction"
+                rows={3}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey) {
+                    event.preventDefault();
+                    handleSendMessage();
+                  }
+                }}
+                className="w-full resize-none rounded-2xl border border-appia-border/80 bg-appia-sunken px-3 py-2 text-sm text-appia-foreground placeholder:text-appia-muted focus:border-appia-accent focus:outline-none focus:ring-2 focus:ring-appia-accent/30"
+              />
+              <div className="mt-3 flex items-center justify-between">
+                <span className="text-xs text-appia-muted">Shift + Enter to add a new line</span>
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="inline-flex items-center gap-2 rounded-full border border-appia-accent/40 bg-appia-accent-soft px-4 py-2 text-sm font-semibold text-appia-foreground transition hover:shadow-appia-glow disabled:cursor-not-allowed disabled:border-appia-border disabled:bg-appia-surface disabled:text-appia-muted"
+                >
+                  Send
+                </button>
+              </div>
+            </form>
+          </div>
+          <div className="h-[220px]">
+            <Terminal logs={terminalLogs} />
+          </div>
+        </div>
+
+        <div className="flex w-[320px] flex-col">
+          <FileExplorer
+            files={files}
+            onFileSelect={setSelectedFile}
+            activePath={selectedFile?.path ?? null}
+            title="Generated Files"
+          />
+        </div>
+
+        <div className="flex flex-1 flex-col gap-4">
+          <TabView
+            activeTab={activeTab}
+            onTabChange={setActiveTab}
+            previewStatusLabel={PREVIEW_STATUS_LABELS[previewStatus] ?? 'Preview'}
+            autoOpenPreview={autoOpenPreview}
+            onAutoOpenPreviewChange={setAutoOpenPreview}
+          />
+          <div className="flex-1 overflow-hidden rounded-[28px] border border-appia-border/70 bg-transparent">
+            {activeTab === 'code' ? (
+              <CodeEditor file={selectedFile} />
+            ) : (
+              <PreviewFrame
+                files={files}
+                webContainer={webcontainer}
+                isReady={!hasPendingSteps}
+                onStatusChange={setPreviewStatus}
+              />
+            )}
           </div>
         </div>
       </div>

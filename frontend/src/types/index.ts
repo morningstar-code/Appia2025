@@ -33,3 +33,10 @@ export interface FileViewerProps {
   file: FileItem | null;
   onClose: () => void;
 }
+
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: number;
+}
