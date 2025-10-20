@@ -24,8 +24,18 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const publishableKey =
+    process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ??
+    "pk_test_ZXhwZXJ0LWZvd2wtNDYuY2xlcmsuYWNjb3VudHMuZGV2JA";
+
+  if (!publishableKey) {
+    throw new Error(
+      "Missing NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY. Add it to your environment variables.",
+    );
+  }
+
   return (
-    <ClerkProvider>
+    <ClerkProvider publishableKey={publishableKey}>
       <html lang="en">
         <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
           <TrpcProvider>
