@@ -50,6 +50,37 @@ type BuilderVersion = {
   conversation: ChatMessage[];
   llmMessages: ApiMessage[];
 };
+const summarizeArtifact = (content: string): string => {
+  const summaryBits: string[] = [];
+
+  const titleMatch = content.match(/<boltArtifact[^>]*title="([^"]+)"/);
+  if (titleMatch?.[1]) {
+    summaryBits.push(titleMatch[1]);
+  }
+
+  const fileMatches = [...content.matchAll(/<boltAction\s+type="file"\s+filePath="([^"]+)"/g)].map(
+    (match) => match[1],
+  );
+  if (fileMatches.length > 0) {
+    const highlighted = fileMatches.slice(0, 3).join(', ');
+    summaryBits.push(
+      `Files: ${highlighted}${fileMatches.length > 3 ? `, +${fileMatches.length - 3} more` : ''}`,
+    );
+  }
+
+  const commandMatches = [...content.matchAll(/<boltAction\s+type="shell">([\s\S]*?)<\/boltAction>/g)];
+  if (commandMatches.length > 0) {
+    const commands = commandMatches
+      .map((match) => match[1].trim().split('\n')[0])
+      .filter(Boolean)
+      .slice(0, 2);
+    if (commands.length) {
+      summaryBits.push(`Commands: ${commands.join(', ')}`);
+    }
+  }
+
+  return summaryBits.join(' • ');
+};
 
 const formatAssistantSummary = (content: string): string => {
   if (!content.trim()) {
@@ -59,7 +90,13 @@ const formatAssistantSummary = (content: string): string => {
   if (artifactIndex === -1) {
     return content.trim();
   }
-  return content.slice(0, artifactIndex).trim() || 'Generating project files…';
+
+  const summaryBeforeArtifact = content.slice(0, artifactIndex).trim();
+  if (summaryBeforeArtifact) {
+    return summaryBeforeArtifact;
+  }
+
+  return summarizeArtifact(content) || 'Generated project files';
 };
 
 const createChatMessage = (role: ChatMessage['role'], content: string): ChatMessage => ({
@@ -1109,7 +1146,7 @@ export function Builder() {
   }, [conversation]);
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-appia-background">
+    <div className="flex min-h-screen flex-col overflow-x-hidden bg-appia-background">
       <AppShellHeader
         prompt={prompt}
         statusLabel={headerStatusLabel}
@@ -1122,7 +1159,7 @@ export function Builder() {
         activeVersionId={activeVersionId}
         onSelectVersion={versions.length ? handleSelectVersion : undefined}
       />
-      <div className="mx-auto grid h-full w-full max-w-[1680px] flex-1 grid-cols-[360px_320px_minmax(0,1fr)] gap-6 px-6 py-6">
+      <div className="mx-auto grid w-full max-w-[1680px] flex-1 grid-cols-[360px_320px_minmax(0,1fr)] gap-6 px-6 py-6">
         <div className="flex min-h-0 flex-col gap-4">
           <div className="shrink-0">
             <StepsList
