@@ -1161,15 +1161,17 @@ export function Builder() {
       />
       <div className="mx-auto grid h-full w-full max-w-[1680px] grid-cols-[360px_320px_minmax(0,1fr)] gap-6 px-6 py-6">
         <div className="flex min-h-0 flex-col gap-4">
-          <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border border-appia-border/80 bg-appia-surface/90 shadow-appia-card">
-            <div className="shrink-0 border-b border-appia-border/70 px-4 pt-4 pb-3">
+          <div className="flex min-h-[220px] flex-col overflow-hidden rounded-3xl border border-appia-border/80 bg-appia-surface/90 shadow-appia-card">
+            <div className="flex-1 overflow-y-auto px-4 py-4">
               <StepsList
                 steps={steps}
                 currentStep={currentStep}
                 onStepClick={setCurrentStep}
               />
             </div>
-            <div className="flex flex-1 flex-col overflow-hidden">
+          </div>
+          <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border border-appia-border/80 bg-appia-surface/90 shadow-appia-card">
+            <div className="flex flex-col overflow-hidden">
               <header className="flex items-center justify-between border-b border-appia-border/70 px-4 py-3">
                 <div className="flex items-center gap-2 text-sm font-medium text-appia-foreground/90">
                   <MessageCircle className="h-4 w-4 text-appia-accent" />
@@ -1231,8 +1233,8 @@ export function Builder() {
               <form
                 onSubmit={handleSendMessage}
                 className="sticky bottom-4 mx-4 mb-4 rounded-3xl border border-appia-border/80 bg-appia-surface/95 p-3 shadow-appia-card"
-            >
-              <textarea
+              >
+                <textarea
                 value={chatInput}
                 onChange={(event) => setChatInput(event.target.value)}
                 placeholder="Send Appia a follow-up instruction"
@@ -1261,7 +1263,7 @@ export function Builder() {
             </form>
             </div>
           </div>
-          <div className="shrink-0 min-h-[220px] overflow-hidden rounded-3xl border border-appia-border/80 bg-appia-surface/90 shadow-appia-card">
+          <div className="shrink-0 h-64 overflow-hidden rounded-3xl border border-appia-border/80 bg-appia-surface/90 shadow-appia-card">
             <Terminal logs={terminalLogs} />
           </div>
         </div>
