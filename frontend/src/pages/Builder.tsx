@@ -1161,31 +1161,32 @@ export function Builder() {
       />
       <div className="mx-auto grid h-full w-full max-w-[1680px] grid-cols-[360px_320px_minmax(0,1fr)] gap-6 px-6 py-6">
         <div className="flex min-h-0 flex-col gap-4">
-          <div className="shrink-0">
-            <StepsList
-              steps={steps}
-              currentStep={currentStep}
-              onStepClick={setCurrentStep}
-            />
-          </div>
           <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border border-appia-border/80 bg-appia-surface/90 shadow-appia-card">
-            <header className="flex items-center justify-between border-b border-appia-border/70 px-4 py-3">
-              <div className="flex items-center gap-2 text-sm font-medium text-appia-foreground/90">
-                <MessageCircle className="h-4 w-4 text-appia-accent" />
-                Conversation
-              </div>
-              {loading && (
-                <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-appia-border/60 bg-appia-surface">
-                  <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-appia-accent border-t-transparent" />
-                </span>
-              )}
-            </header>
-            <div ref={chatScrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
-              {conversation.length === 0 ? (
-                <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-appia-muted">
-                  <MessageCircle className="h-6 w-6 text-appia-accent" />
-                  <span>Waiting for Appia to generate your workspace…</span>
+            <div className="shrink-0 border-b border-appia-border/70 px-4 pt-4 pb-3">
+              <StepsList
+                steps={steps}
+                currentStep={currentStep}
+                onStepClick={setCurrentStep}
+              />
+            </div>
+            <div className="flex flex-1 flex-col overflow-hidden">
+              <header className="flex items-center justify-between border-b border-appia-border/70 px-4 py-3">
+                <div className="flex items-center gap-2 text-sm font-medium text-appia-foreground/90">
+                  <MessageCircle className="h-4 w-4 text-appia-accent" />
+                  Conversation
                 </div>
+                {loading && (
+                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-appia-border/60 bg-appia-surface">
+                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-appia-accent border-t-transparent" />
+                  </span>
+                )}
+              </header>
+              <div ref={chatScrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+                {conversation.length === 0 ? (
+                  <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-appia-muted">
+                    <MessageCircle className="h-6 w-6 text-appia-accent" />
+                    <span>Waiting for Appia to generate your workspace…</span>
+                  </div>
               ) : (
                 conversation.map((message) => (
                   <div
@@ -1225,11 +1226,11 @@ export function Builder() {
                     })()}
                   </div>
                 ))
-              )}
-            </div>
-            <form
-              onSubmit={handleSendMessage}
-              className="sticky bottom-4 mx-4 mb-4 rounded-3xl border border-appia-border/80 bg-appia-surface/95 p-3 shadow-appia-card"
+                )}
+              </div>
+              <form
+                onSubmit={handleSendMessage}
+                className="sticky bottom-4 mx-4 mb-4 rounded-3xl border border-appia-border/80 bg-appia-surface/95 p-3 shadow-appia-card"
             >
               <textarea
                 value={chatInput}
@@ -1258,8 +1259,9 @@ export function Builder() {
                 </button>
               </div>
             </form>
+            </div>
           </div>
-          <div className="shrink-0 min-h-[220px]">
+          <div className="shrink-0 min-h-[220px] overflow-hidden rounded-3xl border border-appia-border/80 bg-appia-surface/90 shadow-appia-card">
             <Terminal logs={terminalLogs} />
           </div>
         </div>
