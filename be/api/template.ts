@@ -22,7 +22,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         role: 'user', 
         content: prompt
       }],
-      model: 'claude-3-5-haiku-20241022',
+      model: 'claude-3-5-sonnet-latest',
       max_tokens: 200,
       system: "Return either node or react based on what do you think this project should be. Only return a single word either 'node' or 'react'. Do not return anything extra"
     });

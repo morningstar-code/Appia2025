@@ -1109,7 +1109,7 @@ export function Builder() {
   }, [conversation]);
 
   return (
-    <div className="flex min-h-screen flex-col bg-appia-background">
+    <div className="flex h-screen flex-col overflow-hidden bg-appia-background">
       <AppShellHeader
         prompt={prompt}
         statusLabel={headerStatusLabel}
@@ -1122,14 +1122,16 @@ export function Builder() {
         activeVersionId={activeVersionId}
         onSelectVersion={versions.length ? handleSelectVersion : undefined}
       />
-      <div className="mx-auto grid w-full max-w-[1680px] flex-1 grid-cols-[360px_320px_minmax(0,1fr)] gap-6 px-6 py-6">
-        <div className="flex h-[calc(100vh-120px)] flex-col gap-4">
-          <StepsList
-            steps={steps}
-            currentStep={currentStep}
-            onStepClick={setCurrentStep}
-          />
-          <div className="relative flex flex-1 flex-col overflow-hidden rounded-3xl border border-appia-border/80 bg-appia-surface/90 shadow-appia-card">
+      <div className="mx-auto grid h-full w-full max-w-[1680px] flex-1 grid-cols-[360px_320px_minmax(0,1fr)] gap-6 px-6 py-6">
+        <div className="flex min-h-0 flex-col gap-4">
+          <div className="shrink-0">
+            <StepsList
+              steps={steps}
+              currentStep={currentStep}
+              onStepClick={setCurrentStep}
+            />
+          </div>
+          <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border border-appia-border/80 bg-appia-surface/90 shadow-appia-card">
             <header className="flex items-center justify-between border-b border-appia-border/70 px-4 py-3">
               <div className="flex items-center gap-2 text-sm font-medium text-appia-foreground/90">
                 <MessageCircle className="h-4 w-4 text-appia-accent" />
@@ -1220,12 +1222,12 @@ export function Builder() {
               </div>
             </form>
           </div>
-          <div className="h-[220px]">
+          <div className="shrink-0 min-h-[220px]">
             <Terminal logs={terminalLogs} />
           </div>
         </div>
 
-        <div className="flex h-[calc(100vh-120px)] flex-col">
+        <div className="flex h-full min-h-0 flex-col">
           <FileExplorer
             files={files}
             onFileSelect={setSelectedFile}
@@ -1234,7 +1236,7 @@ export function Builder() {
           />
         </div>
 
-        <div className="flex h-[calc(100vh-120px)] flex-col gap-4">
+        <div className="flex h-full min-h-0 flex-col gap-4">
           <TabView
             activeTab={activeTab}
             onTabChange={setActiveTab}
