@@ -1290,6 +1290,7 @@ export function Builder() {
                 webContainer={webcontainer}
                 isReady={!hasPendingSteps && pendingWriteCount === 0 && !isViewingHistory}
                 onStatusChange={setPreviewStatus}
+                onLog={addLog}
               />
             )}
           </div>

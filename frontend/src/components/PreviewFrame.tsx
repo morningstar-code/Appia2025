@@ -1,6 +1,6 @@
 import { WebContainer, WebContainerProcess } from '@webcontainer/api';
 import React, { useEffect, useMemo, useState } from 'react';
-import { Globe2, PlugZap, RefreshCcwDot } from 'lucide-react';
+import { Globe2, PlugZap, RefreshCcwDot, RotateCcw } from 'lucide-react';
 import { FileItem } from '../types';
 
 export type PreviewStatus = 'idle' | 'installing' | 'starting' | 'ready' | 'error' | 'waiting';
@@ -10,6 +10,7 @@ interface PreviewFrameProps {
   webContainer?: WebContainer;
   isReady: boolean;
   onStatusChange?: (status: PreviewStatus) => void;
+  onLog?: (line: string) => void;
 }
 
 export const PREVIEW_STATUS_LABELS: Record<PreviewStatus, string> = {
@@ -26,10 +27,13 @@ export function PreviewFrame({
   webContainer,
   isReady,
   onStatusChange,
+  onLog,
 }: PreviewFrameProps) {
   const [url, setUrl] = useState<string | null>(null);
   const [status, setStatus] = useState<PreviewStatus>('idle');
   const [error, setError] = useState<string | null>(null);
+  const [runToken, setRunToken] = useState(0);
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
 
   const packageJsonPath = useMemo(() => {
     const traverse = (items: FileItem[]): string | null => {
@@ -73,7 +77,9 @@ export function PreviewFrame({
         .pipeTo(
           new WritableStream({
             write(data) {
-              console.log(`[Preview:${label}]`, decoder.decode(data));
+              const text = decoder.decode(data);
+              console.log(`[Preview:${label}]`, text);
+              onLog?.(`[preview:${label}] ${text.trim()}`);
             },
           }),
         )
@@ -100,6 +106,7 @@ export function PreviewFrame({
       setStatus('installing');
       setError(null);
       setUrl(null);
+      setHasLoadedOnce(false);
 
       try {
         const packageDir = packageJsonPath?.includes('/')
@@ -167,7 +174,27 @@ export function PreviewFrame({
       setUrl(null);
       setStatus('idle');
     };
-  }, [webContainer, files, hasPackageJson, isReady, packageJsonPath]);
+  }, [webContainer, files, hasPackageJson, isReady, packageJsonPath, runToken, onLog]);
+
+  useEffect(() => {
+    if (status === 'ready' && url && !hasLoadedOnce) {
+      const fallback = setTimeout(() => {
+        if (!hasLoadedOnce) {
+          setStatus('error');
+          setError('Preview loaded but no content rendered. Try restarting.');
+        }
+      }, 8000);
+      return () => clearTimeout(fallback);
+    }
+  }, [status, url, hasLoadedOnce]);
+
+  const handleReload = () => {
+    setRunToken((prev) => prev + 1);
+    setStatus('installing');
+    setError(null);
+    setUrl(null);
+    setHasLoadedOnce(false);
+  };
 
   return (
     <div className="flex h-full flex-col gap-4 rounded-2xl border border-appia-border/70 bg-appia-surface/90 p-4 shadow-appia-card">
@@ -176,18 +203,28 @@ export function PreviewFrame({
           <Globe2 className="h-4 w-4 text-appia-accent" />
           Live Preview
         </div>
-        <span
-          className={`inline-flex items-center gap-1 rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wide ${
-            status === 'ready'
-              ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200'
-              : status === 'error'
-              ? 'border-rose-400/40 bg-rose-500/10 text-rose-200'
-              : 'border-appia-border/70 bg-appia-surface text-appia-muted'
-          }`}
-        >
-          <RefreshCcwDot className="h-3.5 w-3.5" />
-          {PREVIEW_STATUS_LABELS[status]}
-        </span>
+        <div className="flex items-center gap-2">
+          <span
+            className={`inline-flex items-center gap-1 rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wide ${
+              status === 'ready'
+                ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200'
+                : status === 'error'
+                ? 'border-rose-400/40 bg-rose-500/10 text-rose-200'
+                : 'border-appia-border/70 bg-appia-surface text-appia-muted'
+            }`}
+          >
+            <RefreshCcwDot className="h-3.5 w-3.5" />
+            {PREVIEW_STATUS_LABELS[status]}
+          </span>
+          <button
+            type="button"
+            onClick={handleReload}
+            className="inline-flex items-center gap-1 rounded-full border border-appia-border/80 bg-appia-surface px-3 py-1 text-xs font-semibold uppercase tracking-wide text-appia-muted hover:border-appia-accent/40 hover:text-appia-foreground/90"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            Restart preview
+          </button>
+        </div>
       </header>
 
       <div className="relative flex flex-1 items-center justify-center overflow-hidden rounded-2xl border border-appia-border/70 bg-gradient-to-br from-appia-surface to-appia-sunken">
@@ -202,6 +239,7 @@ export function PreviewFrame({
             title="Appia preview"
             src={url}
             className="h-full w-full overflow-hidden rounded-[28px] border border-appia-border/40 bg-white"
+            onLoad={() => setHasLoadedOnce(true)}
           />
         )}
       </div>
