@@ -148,6 +148,8 @@ export function Builder() {
     [steps],
   );
 
+  const isViewingHistory = activeVersionId !== null;
+
   const headerStatusLabel = useMemo(() => {
     if (isViewingHistory) {
       return 'Viewing saved version';
@@ -176,8 +178,6 @@ export function Builder() {
     }
     return 'success';
   }, [webcontainerError, templateSet, loading, hasPendingSteps, isViewingHistory]);
-
-  const isViewingHistory = activeVersionId !== null;
 
   const addLog = useCallback((message: string) => {
     setTerminalLogs((prev) => [
