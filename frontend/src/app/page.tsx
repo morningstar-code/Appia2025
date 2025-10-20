@@ -1,9 +1,33 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { auth } from "@clerk/nextjs/server";
 import { prisma } from "@/lib/prisma";
 
+async function createProject(formData: FormData) {
+  "use server";
+  const { userId } = await auth();
+  if (!userId) {
+    redirect('/');
+  }
+
+  const prompt = String(formData.get('prompt') ?? '').trim();
+  if (!prompt) {
+    redirect('/');
+  }
+
+  await prisma.project.create({
+    data: {
+      userId,
+      title: prompt.slice(0, 60) || 'Untitled project',
+      prompt,
+    },
+  });
+
+  redirect(`/builder?prompt=${encodeURIComponent(prompt)}`);
+}
+
 export default async function Page() {
-  const { userId } = auth();
+  const { userId } = await auth();
 
   if (!userId) {
     return (
@@ -27,6 +51,27 @@ export default async function Page() {
 
   return (
     <main className="mx-auto flex min-h-[calc(100vh-64px)] w-full max-w-5xl flex-col gap-8 px-6 py-10">
+      <form action={createProject} className="rounded-3xl border bg-card p-6 shadow">
+        <div className="flex flex-col gap-3">
+          <label htmlFor="prompt" className="text-sm font-semibold text-muted-foreground">
+            Describe what you want Appia to build
+          </label>
+          <textarea
+            id="prompt"
+            name="prompt"
+            required
+            rows={4}
+            className="w-full resize-none rounded-2xl border bg-muted/40 px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/30"
+            placeholder="Create an iOS-style calculator app with onboarding and Clerk authentication"
+          />
+          <button
+            type="submit"
+            className="self-end rounded-full bg-primary px-5 py-2 text-sm font-semibold text-primary-foreground transition hover:opacity-90"
+          >
+            Generate Workspace
+          </button>
+        </div>
+      </form>
       <section>
         <h1 className="text-3xl font-semibold">Your recent projects</h1>
         <p className="text-muted-foreground">

@@ -3,7 +3,7 @@ import { initTRPC } from "@trpc/server";
 import superjson from "superjson";
 
 export const createTRPCContext = async () => {
-  const { userId } = auth();
+  const { userId } = await auth();
   return { userId };
 };
 

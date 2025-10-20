@@ -1,6 +1,6 @@
 import { Inngest } from "inngest";
 
 export const inngest = new Inngest({
-  name: "Appia Builder",
+  id: "appia-builder",
   eventKey: process.env.INNGEST_EVENT_KEY,
 });
