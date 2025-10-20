@@ -16,6 +16,8 @@ export function TabView({
   autoOpenPreview = true,
   onAutoOpenPreviewChange,
 }: TabViewProps) {
+  const autoPreviewDisabled = !onAutoOpenPreviewChange;
+
   return (
     <div className="flex items-center justify-between rounded-2xl border border-appia-border/70 bg-appia-surface/90 px-2 py-2 shadow-appia-card">
       <div className="flex items-center gap-1">
@@ -51,11 +53,18 @@ export function TabView({
             {previewStatusLabel}
           </span>
         )}
-        <label className="inline-flex cursor-pointer items-center gap-2 rounded-full border border-appia-border/80 bg-appia-surface px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-appia-muted hover:border-appia-accent/40">
+        <label
+          className={`inline-flex items-center gap-2 rounded-full border border-appia-border/80 bg-appia-surface px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide ${
+            autoPreviewDisabled
+              ? 'cursor-not-allowed text-appia-muted/60'
+              : 'cursor-pointer text-appia-muted hover:border-appia-accent/40'
+          }`}
+        >
           <input
             type="checkbox"
-            className="h-3.5 w-3.5 rounded border-appia-border/70 bg-appia-surface text-appia-accent focus:ring-appia-accent/40"
+            className="h-3.5 w-3.5 rounded border-appia-border/70 bg-appia-surface text-appia-accent focus:ring-appia-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
             checked={autoOpenPreview}
+            disabled={autoPreviewDisabled}
             onChange={(event) =>
               onAutoOpenPreviewChange?.(event.target.checked)
             }

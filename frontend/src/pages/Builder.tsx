@@ -28,6 +28,7 @@ import {
 } from '../components/PreviewFrame';
 import { TabView } from '../components/TabView';
 import { Terminal } from '../components/Terminal';
+import { DatabasePanel } from '../components/DatabasePanel';
 import { MessageCircle, Bot, User as UserIcon } from 'lucide-react';
 
 type ApiMessage = { role: 'user' | 'assistant'; content: string };
@@ -38,6 +39,27 @@ type IncomingStep = {
   type: StepType;
   code?: string;
   path?: string;
+};
+
+type BuilderVersion = {
+  id: string;
+  label: string;
+  createdAt: number;
+  steps: Step[];
+  files: FileItem[];
+  conversation: ChatMessage[];
+  llmMessages: ApiMessage[];
+};
+
+const formatAssistantSummary = (content: string): string => {
+  if (!content.trim()) {
+    return '';
+  }
+  const artifactIndex = content.indexOf('<boltArtifact');
+  if (artifactIndex === -1) {
+    return content.trim();
+  }
+  return content.slice(0, artifactIndex).trim() || 'Generating project files…';
 };
 
 const createChatMessage = (role: ChatMessage['role'], content: string): ChatMessage => ({
@@ -55,6 +77,25 @@ const sortFileNodes = (nodes: FileItem[]): FileItem[] => {
     return a.name.localeCompare(b.name);
   });
 };
+
+const cloneSteps = (items: Step[]): Step[] =>
+  items.map((step) => ({ ...step }));
+
+const cloneFiles = (items: FileItem[]): FileItem[] =>
+  items.map((item) =>
+    item.type === 'folder'
+      ? {
+          ...item,
+          children: item.children ? cloneFiles(item.children) : [],
+        }
+      : { ...item },
+  );
+
+const cloneMessages = (items: ChatMessage[]): ChatMessage[] =>
+  items.map((message) => ({ ...message }));
+
+const cloneApiMessages = (items: ApiMessage[]): ApiMessage[] =>
+  items.map((message) => ({ ...message }));
 
 export function Builder() {
   const location = useLocation();
@@ -78,6 +119,10 @@ export function Builder() {
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>('idle');
   const [autoOpenPreview, setAutoOpenPreview] = useState(true);
   const [workspaceMounted, setWorkspaceMounted] = useState(false);
+  const [versions, setVersions] = useState<BuilderVersion[]>([]);
+  const [activeVersionId, setActiveVersionId] = useState<string | null>(null);
+  const [showDatabasePanel, setShowDatabasePanel] = useState(false);
+  const [pendingWriteCount, setPendingWriteCount] = useState(0);
 
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const cwdRef = useRef<string>('');
@@ -87,6 +132,10 @@ export function Builder() {
   const hasInitializedRef = useRef(false);
   const runningScriptRef = useRef(false);
   const webcontainerStatusRef = useRef<'booting' | 'ready' | 'error' | null>(null);
+  const pendingFileWritesRef = useRef<Map<string, string>>(new Map());
+  const versionCounterRef = useRef(1);
+  const templateMessagesRef = useRef<ApiMessage[]>([]);
+  const currentWorkingSnapshotRef = useRef<BuilderVersion | null>(null);
 
   const {
     instance: webcontainer,
@@ -100,6 +149,9 @@ export function Builder() {
   );
 
   const headerStatusLabel = useMemo(() => {
+    if (isViewingHistory) {
+      return 'Viewing saved version';
+    }
     if (webcontainerError) {
       return 'WebContainer error';
     }
@@ -110,9 +162,12 @@ export function Builder() {
       return 'Building project';
     }
     return 'Ready';
-  }, [webcontainerError, templateSet, loading, hasPendingSteps]);
+  }, [webcontainerError, templateSet, loading, hasPendingSteps, isViewingHistory]);
 
   const headerStatusTone: 'neutral' | 'active' | 'success' | 'warning' | 'error' = useMemo(() => {
+    if (isViewingHistory) {
+      return 'neutral';
+    }
     if (webcontainerError) {
       return 'error';
     }
@@ -120,7 +175,9 @@ export function Builder() {
       return 'active';
     }
     return 'success';
-  }, [webcontainerError, templateSet, loading, hasPendingSteps]);
+  }, [webcontainerError, templateSet, loading, hasPendingSteps, isViewingHistory]);
+
+  const isViewingHistory = activeVersionId !== null;
 
   const addLog = useCallback((message: string) => {
     setTerminalLogs((prev) => [
@@ -200,7 +257,7 @@ export function Builder() {
     return insert(tree, 0, '');
   }, []);
 
-  const writeFileToWebContainer = useCallback(
+  const writeFileDirect = useCallback(
     async (path: string, contents: string) => {
       if (!webcontainer) {
         return;
@@ -220,6 +277,33 @@ export function Builder() {
     },
     [webcontainer],
   );
+
+  const stageFileForWorkspace = useCallback(
+    async (path: string, contents: string) => {
+      pendingFileWritesRef.current.set(path, contents);
+      setPendingWriteCount(pendingFileWritesRef.current.size);
+      if (!webcontainer || !workspaceMounted) {
+        return false;
+      }
+      await writeFileDirect(path, contents);
+      pendingFileWritesRef.current.delete(path);
+      setPendingWriteCount(pendingFileWritesRef.current.size);
+      return true;
+    },
+    [writeFileDirect, webcontainer, workspaceMounted],
+  );
+
+  const flushPendingFileWrites = useCallback(async () => {
+    if (!webcontainer || !workspaceMounted) {
+      return;
+    }
+    for (const [path, contents] of pendingFileWritesRef.current.entries()) {
+      await writeFileDirect(path, contents);
+      pendingFileWritesRef.current.delete(path);
+      setPendingWriteCount(pendingFileWritesRef.current.size);
+      addLog(`✓ File synced: ${path}`);
+    }
+  }, [writeFileDirect, webcontainer, workspaceMounted, addLog]);
 
   const ensurePackageJson = useCallback(
     async (cwd: string) => {
@@ -247,13 +331,15 @@ export function Builder() {
         },
       };
 
-      await writeFileToWebContainer(
-        packagePath,
-        JSON.stringify(defaultPackageJson, null, 2),
-      );
-      addLog(`Created default package.json at ${packagePath}`);
+      const contents = JSON.stringify(defaultPackageJson, null, 2);
+      const written = await stageFileForWorkspace(packagePath, contents);
+      if (written) {
+        addLog(`Created default package.json at ${packagePath}`);
+      } else {
+        addLog(`Queued package.json creation at ${packagePath}`);
+      }
     },
-    [webcontainer, writeFileToWebContainer, addLog],
+    [stageFileForWorkspace, addLog],
   );
 
   const addFileStepResult = useCallback(
@@ -283,12 +369,14 @@ export function Builder() {
         };
       });
 
-      if (webcontainer && workspaceMounted) {
-        await writeFileToWebContainer(normalizedPath, content);
+      const written = await stageFileForWorkspace(normalizedPath, content);
+      if (written) {
         addLog(`✓ File created: ${normalizedPath}`);
+      } else {
+        addLog(`⏳ Queued file for workspace sync: ${normalizedPath}`);
       }
     },
-    [addLog, upsertFile, webcontainer, workspaceMounted, writeFileToWebContainer],
+    [addLog, upsertFile, stageFileForWorkspace],
   );
 
   const runShellCommands = useCallback(
@@ -660,6 +748,7 @@ export function Builder() {
         { role: 'user', content: prompt.trim() },
       ];
 
+      templateMessagesRef.current = initialMessages;
       setLlmMessages(initialMessages);
       addLog('Template set, generating build plan...');
       setLoading(true);
@@ -683,6 +772,9 @@ export function Builder() {
 
   const handleSendMessage = useCallback(
     async (event?: FormEvent) => {
+      if (isViewingHistory) {
+        return;
+      }
       event?.preventDefault();
       const trimmed = chatInput.trim();
       if (!trimmed) {
@@ -718,6 +810,40 @@ export function Builder() {
   );
 
   const handleRunAgain = useCallback(() => {
+    if (isViewingHistory) {
+      return;
+    }
+    if (!prompt.trim() || templateMessagesRef.current.length === 0) {
+      return;
+    }
+
+    const snapshotSteps = cloneSteps(steps);
+    const snapshotFiles = cloneFiles(files);
+    const snapshotConversation = cloneMessages(conversation);
+    const snapshotLlm = cloneApiMessages(llmMessages);
+
+    if (
+      snapshotSteps.length > 0 ||
+      snapshotFiles.length > 0 ||
+      snapshotConversation.length > 0
+    ) {
+      const now = Date.now();
+      const versionLabel = `Version ${versionCounterRef.current}`;
+      const version: BuilderVersion = {
+        id: `${now}-${Math.random().toString(16).slice(2)}`,
+        label: versionLabel,
+        createdAt: now,
+        steps: snapshotSteps,
+        files: snapshotFiles,
+        conversation: snapshotConversation,
+        llmMessages: snapshotLlm,
+      };
+      setVersions((prev) => [version, ...prev]);
+      versionCounterRef.current += 1;
+    }
+
+    pendingFileWritesRef.current.clear();
+    setPendingWriteCount(0);
     setSteps([]);
     setFiles([]);
     setSelectedFile(null);
@@ -728,10 +854,69 @@ export function Builder() {
     setTemplateSet(false);
     setChatInput('');
     setPreviewStatus('idle');
+    setActiveVersionId(null);
     processedActionKeysRef.current.clear();
     artifactStepAddedRef.current = false;
+    currentWorkingSnapshotRef.current = null;
     initialiseWorkspace();
-  }, [initialiseWorkspace]);
+  }, [prompt, steps, files, conversation, llmMessages, initialiseWorkspace]);
+
+  const handleSelectVersion = useCallback(
+    (id: string) => {
+      if (id === '__current__') {
+        if (currentWorkingSnapshotRef.current) {
+          const snapshot = currentWorkingSnapshotRef.current;
+          setActiveVersionId(null);
+          setSteps(cloneSteps(snapshot.steps));
+          setFiles(cloneFiles(snapshot.files));
+          setConversation(cloneMessages(snapshot.conversation));
+          setLlmMessages(cloneApiMessages(snapshot.llmMessages));
+          setCurrentStep(snapshot.steps.length ? snapshot.steps[0].id : null);
+          setSelectedFile(null);
+          setPreviewStatus('idle');
+          setShowDatabasePanel(false);
+          runningScriptRef.current = false;
+          waitingForWebContainerLogged.current = false;
+          setPendingWriteCount(0);
+        } else {
+          setActiveVersionId(null);
+        }
+        currentWorkingSnapshotRef.current = null;
+        return;
+      }
+
+      const target = versions.find((version) => version.id === id);
+      if (!target || activeVersionId === id) {
+        return;
+      }
+
+      if (activeVersionId === null) {
+        currentWorkingSnapshotRef.current = {
+          id: 'current',
+          label: 'Current',
+          createdAt: Date.now(),
+          steps: cloneSteps(steps),
+          files: cloneFiles(files),
+          conversation: cloneMessages(conversation),
+          llmMessages: cloneApiMessages(llmMessages),
+        };
+      }
+
+      setActiveVersionId(id);
+      setSteps(cloneSteps(target.steps));
+      setFiles(cloneFiles(target.files));
+      setConversation(cloneMessages(target.conversation));
+      setLlmMessages(cloneApiMessages(target.llmMessages));
+      setCurrentStep(target.steps.length ? target.steps[0].id : null);
+      setSelectedFile(null);
+      setPreviewStatus('idle');
+      setShowDatabasePanel(false);
+      runningScriptRef.current = false;
+      waitingForWebContainerLogged.current = false;
+      setPendingWriteCount(0);
+    },
+    [versions, activeVersionId, steps, files, conversation, llmMessages],
+  );
 
   useEffect(() => {
     if (!initialPrompt) {
@@ -815,12 +1000,27 @@ export function Builder() {
   }, [workspaceMounted]);
 
   useEffect(() => {
+    if (workspaceMounted) {
+      flushPendingFileWrites();
+    }
+  }, [workspaceMounted, flushPendingFileWrites]);
+
+  useEffect(() => {
+    if (webcontainer) {
+      flushPendingFileWrites();
+    }
+  }, [webcontainer, flushPendingFileWrites]);
+
+  useEffect(() => {
     if (webcontainerError) {
       waitingForWebContainerLogged.current = false;
     }
   }, [webcontainerError]);
 
   useEffect(() => {
+    if (isViewingHistory) {
+      return;
+    }
     steps.forEach((step, index) => {
       if (step.status !== 'pending') {
         return;
@@ -849,9 +1049,12 @@ export function Builder() {
         })();
       }
     });
-  }, [steps, markStepStatus, addFileStepResult, addLog]);
+  }, [steps, markStepStatus, addFileStepResult, addLog, isViewingHistory]);
 
   useEffect(() => {
+    if (isViewingHistory) {
+      return;
+    }
     if (runningScriptRef.current) {
       return;
     }
@@ -890,13 +1093,13 @@ export function Builder() {
         runningScriptRef.current = false;
       }
     })();
-  }, [steps, workspaceMounted, webcontainerError, runShellCommands, markStepStatus, addLog]);
+  }, [steps, workspaceMounted, webcontainerError, runShellCommands, markStepStatus, addLog, isViewingHistory]);
 
   useEffect(() => {
-    if (autoOpenPreview && previewStatus === 'ready') {
+    if (!isViewingHistory && autoOpenPreview && previewStatus === 'ready') {
       setActiveTab('preview');
     }
-  }, [autoOpenPreview, previewStatus]);
+  }, [autoOpenPreview, previewStatus, isViewingHistory]);
 
   useEffect(() => {
     if (!chatScrollRef.current) {
@@ -912,16 +1115,21 @@ export function Builder() {
         statusLabel={headerStatusLabel}
         statusTone={headerStatusTone}
         onRunAgain={handleRunAgain}
-        busy={loading || hasPendingSteps || webcontainerBooting}
+        busy={loading || hasPendingSteps || webcontainerBooting || isViewingHistory}
+        onDatabaseClick={() => setShowDatabasePanel((prev) => !prev)}
+        databaseOpen={showDatabasePanel}
+        versions={versions}
+        activeVersionId={activeVersionId}
+        onSelectVersion={versions.length ? handleSelectVersion : undefined}
       />
-      <div className="mx-auto flex w-full max-w-[1650px] flex-1 gap-6 px-6 py-6">
-        <div className="flex w-[360px] flex-col gap-4">
+      <div className="mx-auto grid w-full max-w-[1680px] flex-1 grid-cols-[360px_320px_minmax(0,1fr)] gap-6 px-6 py-6">
+        <div className="flex h-[calc(100vh-120px)] flex-col gap-4">
           <StepsList
             steps={steps}
             currentStep={currentStep}
             onStepClick={setCurrentStep}
           />
-          <div className="relative flex h-full flex-col overflow-hidden rounded-3xl border border-appia-border/80 bg-appia-surface/90 shadow-appia-card">
+          <div className="relative flex flex-1 flex-col overflow-hidden rounded-3xl border border-appia-border/80 bg-appia-surface/90 shadow-appia-card">
             <header className="flex items-center justify-between border-b border-appia-border/70 px-4 py-3">
               <div className="flex items-center gap-2 text-sm font-medium text-appia-foreground/90">
                 <MessageCircle className="h-4 w-4 text-appia-accent" />
@@ -947,23 +1155,35 @@ export function Builder() {
                       message.role === 'user' ? 'justify-end' : 'justify-start'
                     }`}
                   >
-                    <div
-                      className={`relative max-w-[85%] rounded-3xl border px-4 py-3 text-sm shadow-appia-card ${
-                        message.role === 'user'
-                          ? 'border-appia-accent/40 bg-appia-accent-soft text-appia-foreground shadow-appia-glow'
-                          : 'border-appia-border/70 bg-appia-surface text-appia-foreground/85'
-                      }`}
-                    >
-                      <div className="mb-2 flex items-center gap-2 text-xs uppercase tracking-wide text-appia-muted">
-                        {message.role === 'user' ? (
-                          <UserIcon className="h-3.5 w-3.5 text-appia-muted" />
-                        ) : (
-                          <Bot className="h-3.5 w-3.5 text-appia-accent" />
-                        )}
-                        {message.role === 'user' ? 'You' : 'Appia' }
-                      </div>
-                      <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
-                    </div>
+                    {(() => {
+                      const displayContent =
+                        message.role === 'assistant'
+                          ? formatAssistantSummary(message.content)
+                          : message.content;
+                      const timestamp = new Date(message.createdAt).toLocaleTimeString();
+                      return (
+                        <div
+                          className={`relative max-w-[85%] rounded-3xl border px-4 py-3 text-sm shadow-appia-card ${
+                            message.role === 'user'
+                              ? 'border-appia-accent/40 bg-appia-accent-soft text-appia-foreground shadow-appia-glow'
+                              : 'border-appia-border/70 bg-appia-surface text-appia-foreground/85'
+                          }`}
+                        >
+                          <div className="mb-2 flex items-center gap-2 text-xs uppercase tracking-wide text-appia-muted">
+                            {message.role === 'user' ? (
+                              <UserIcon className="h-3.5 w-3.5 text-appia-muted" />
+                            ) : (
+                              <Bot className="h-3.5 w-3.5 text-appia-accent" />
+                            )}
+                            {message.role === 'user' ? 'You' : 'Appia'}
+                            <span className="text-[10px] text-appia-muted/70">{timestamp}</span>
+                          </div>
+                          <p className="whitespace-pre-wrap leading-relaxed">
+                            {displayContent || 'Generating project artifacts…'}
+                          </p>
+                        </div>
+                      );
+                    })()}
                   </div>
                 ))
               )}
@@ -983,13 +1203,16 @@ export function Builder() {
                     handleSendMessage();
                   }
                 }}
-                className="w-full resize-none rounded-2xl border border-appia-border/80 bg-appia-sunken px-3 py-2 text-sm text-appia-foreground placeholder:text-appia-muted focus:border-appia-accent focus:outline-none focus:ring-2 focus:ring-appia-accent/30"
+                readOnly={isViewingHistory}
+                className="w-full resize-none rounded-2xl border border-appia-border/80 bg-appia-sunken px-3 py-2 text-sm text-appia-foreground placeholder:text-appia-muted focus:border-appia-accent focus:outline-none focus:ring-2 focus:ring-appia-accent/30 disabled:cursor-not-allowed disabled:opacity-60"
               />
               <div className="mt-3 flex items-center justify-between">
-                <span className="text-xs text-appia-muted">Shift + Enter to add a new line</span>
+                <span className="text-xs text-appia-muted">
+                  {isViewingHistory ? 'Viewing saved version' : 'Shift + Enter to add a new line'}
+                </span>
                 <button
                   type="submit"
-                  disabled={loading}
+                  disabled={loading || isViewingHistory}
                   className="inline-flex items-center gap-2 rounded-full border border-appia-accent/40 bg-appia-accent-soft px-4 py-2 text-sm font-semibold text-appia-foreground transition hover:shadow-appia-glow disabled:cursor-not-allowed disabled:border-appia-border disabled:bg-appia-surface disabled:text-appia-muted"
                 >
                   Send
@@ -1002,7 +1225,7 @@ export function Builder() {
           </div>
         </div>
 
-        <div className="flex w-[320px] flex-col">
+        <div className="flex h-[calc(100vh-120px)] flex-col">
           <FileExplorer
             files={files}
             onFileSelect={setSelectedFile}
@@ -1011,13 +1234,13 @@ export function Builder() {
           />
         </div>
 
-        <div className="flex flex-1 flex-col gap-4">
+        <div className="flex h-[calc(100vh-120px)] flex-col gap-4">
           <TabView
             activeTab={activeTab}
             onTabChange={setActiveTab}
             previewStatusLabel={PREVIEW_STATUS_LABELS[previewStatus] ?? 'Preview'}
             autoOpenPreview={autoOpenPreview}
-            onAutoOpenPreviewChange={setAutoOpenPreview}
+            onAutoOpenPreviewChange={isViewingHistory ? undefined : setAutoOpenPreview}
           />
           <div className="flex-1 overflow-hidden rounded-[28px] border border-appia-border/70 bg-transparent">
             {activeTab === 'code' ? (
@@ -1026,13 +1249,17 @@ export function Builder() {
               <PreviewFrame
                 files={files}
                 webContainer={webcontainer}
-                isReady={!hasPendingSteps}
+                isReady={!hasPendingSteps && pendingWriteCount === 0 && !isViewingHistory}
                 onStatusChange={setPreviewStatus}
               />
             )}
           </div>
         </div>
       </div>
+      <DatabasePanel
+        open={showDatabasePanel}
+        onClose={() => setShowDatabasePanel(false)}
+      />
     </div>
   );
 }
