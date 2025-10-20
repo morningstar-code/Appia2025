@@ -1146,7 +1146,7 @@ export function Builder() {
   }, [conversation]);
 
   return (
-    <div className="flex min-h-screen flex-col overflow-x-hidden bg-appia-background">
+    <div className="flex h-screen flex-col overflow-hidden bg-appia-background">
       <AppShellHeader
         prompt={prompt}
         statusLabel={headerStatusLabel}
@@ -1159,7 +1159,7 @@ export function Builder() {
         activeVersionId={activeVersionId}
         onSelectVersion={versions.length ? handleSelectVersion : undefined}
       />
-      <div className="mx-auto grid w-full max-w-[1680px] flex-1 grid-cols-[360px_320px_minmax(0,1fr)] gap-6 px-6 py-6">
+      <div className="mx-auto grid h-full w-full max-w-[1680px] grid-cols-[360px_320px_minmax(0,1fr)] gap-6 px-6 py-6">
         <div className="flex min-h-0 flex-col gap-4">
           <div className="shrink-0">
             <StepsList
