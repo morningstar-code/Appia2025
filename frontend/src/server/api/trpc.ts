@@ -4,7 +4,7 @@ import superjson from "superjson";
 
 type TrpcContext = {
   userId: string | null;
-  getAuth: ReturnType<typeof auth>;
+  getAuth: () => Promise<Awaited<ReturnType<typeof auth>>>;
 };
 
 export const createTRPCContext = async () => {
