@@ -6,5 +6,6 @@ export const config = {
   matcher: [
     "/((?!_next/image|_next/static|favicon.ico|.*\\..*).*)",
     "/(api|trpc)(.*)",
+    "/frontend/(.*)",
   ],
 };
